@@ -41,11 +41,14 @@ node "{SKILL_DIR}/session.js" upload --file "<abs path>" [--url "<chat URL>"] [-
 ```
 `--kakao` adds KakaoTalk Business completion polling + blocker detection. **Outward action — confirm target & file before running**, then verify via the returned `ok`/screenshot.
 
-## 2. download (claude.ai)
+## 2. download (claude.ai / KakaoTalk Business)
 ```
+# claude.ai artifacts + conversation text
 node "{SKILL_DIR}/session.js" download --out "<dir>" [--url "<chat URL>"] --artifacts all|names|none [--names "a|b|c"] --text none|handoff|full|both
+# files/videos from a KakaoTalk Business chat (each message's save button)
+node "{SKILL_DIR}/session.js" download --out "<dir>" --url "<kakao chat URL>" --kakao [--limit N]
 ```
-Artifact buttons matched by `aria-label`; saved via Playwright `download` event + `saveAs()`. Verify via `_result.json` (`verify.ok`, sizes > 0). Ask the user what to save (all/selected, text included?) before running.
+claude.ai artifact buttons matched by `aria-label`; with `--kakao`, save buttons matched by `a.btn_save` (`--limit N` caps count). Saved via Playwright `download` event + `saveAs()`. Verify via `_result.json` (`verify.ok`, sizes > 0). Ask the user what to save before running.
 
 ## 3. chat (ChatGPT / Gemini)
 ```

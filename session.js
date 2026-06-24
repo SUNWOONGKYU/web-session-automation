@@ -95,6 +95,35 @@ async function cmdDownload(o) {
   if (o.text === undefined || o.text === true) o.text = 'none';
   fs.mkdirSync(OUT, { recursive: true });
   await withBrowser(async (ctx) => {
+    // ── KakaoTalk Business chat: download files/videos via each message's save button (a.btn_save) ──
+    if (o.kakao) {
+      let kp = o.url && o.url !== true ? findTab(ctx, new RegExp(String(o.url).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))) : findTab(ctx, /\/chats?\//);
+      if (!kp && o.url && o.url !== true) { kp = await ctx.newPage(); await kp.goto(o.url, { waitUntil: 'domcontentloaded' }); await kp.waitForTimeout(4000); }
+      if (!kp) { emit({ ok: false, error: 'KakaoTalk chat tab not found. Pass --url <chat URL> or open the chat in the automation Chrome.' }); return; }
+      await kp.bringToFront(); await kp.waitForTimeout(1500);
+      const kb = await kp.evaluate(() => document.body.innerText || '');
+      if (/추가인증|탈퇴/.test(kb)) { emit({ ok: false, blocked: true, reason: (kb.match(/추가인증|탈퇴/) || [])[0], hint: 'KakaoTalk admin re-auth required — handle in the browser yourself' }); return; }
+      const res = { out: OUT, downloaded: [], failed: [], verify: {} };
+      const dlP = [];
+      kp.on('download', d => dlP.push(d.saveAs(path.join(OUT, d.suggestedFilename())).then(() => ({ file: d.suggestedFilename(), ok: true })).catch(e => ({ file: d.suggestedFilename(), ok: false, err: String(e).slice(0, 120) }))));
+      const listK = () => fs.readdirSync(OUT).filter(f => !f.endsWith('.crdownload'));
+      const beforeK = new Set(listK());
+      const saves = await kp.$$('a.btn_save');
+      const limit = o.limit && o.limit !== true ? parseInt(o.limit, 10) : saves.length;
+      let clicked = 0;
+      for (const el of saves.slice(0, limit)) {
+        try { await el.scrollIntoViewIfNeeded(); await el.click(); clicked++; await kp.waitForTimeout(1500); }
+        catch (e) { res.failed.push({ err: String(e).slice(0, 120) }); }
+      }
+      await kp.waitForTimeout(2500);
+      const settledK = await Promise.all(dlP);
+      for (const s of settledK) if (!s.ok) res.failed.push({ name: s.file, err: s.err });
+      for (const f of listK().filter(f => !beforeK.has(f)).sort()) res.downloaded.push({ file: f, bytes: fs.statSync(path.join(OUT, f)).size });
+      res.verify = { save_buttons: saves.length, clicked, new_files: res.downloaded.length, ok: res.downloaded.length > 0 && res.downloaded.every(d => d.bytes > 0) };
+      fs.writeFileSync(path.join(OUT, '_result.json'), JSON.stringify(res, null, 2), 'utf-8');
+      emit(res);
+      return;
+    }
     let page = o.url && o.url !== true ? findTab(ctx, new RegExp(String(o.url).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))) : findTab(ctx, /\/chat\//);
     if (!page) page = ctx.pages()[0];
     if (!page) { emit({ ok: false, error: 'No claude.ai /chat/ tab found. Open a claude.ai session in the automation Chrome.' }); return; }

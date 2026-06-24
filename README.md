@@ -23,7 +23,7 @@ One small engine that attaches over **CDP** to a single **dedicated automation C
 | Verb | What it does | Example |
 |---|---|---|
 | **upload** | inject a file into a page's `<input type=file>` and wait for it to finish | send a file to a KakaoTalk Business chat |
-| **download** | save a web app's artifacts/text to a folder | grab claude.ai artifacts + the conversation |
+| **download** | save a web app's files/artifacts to a folder | grab claude.ai artifacts + conversation, or files from a KakaoTalk Business chat |
 | **chat** | type a prompt, submit, and collect the streamed answer | ask ChatGPT / Gemini on the web and read the reply |
 | **status** | report the CDP connection, open tabs and per‑site login | health check |
 
@@ -85,6 +85,9 @@ node session.js upload --file "/path/to/video.mp4" --url "https://business.kakao
 # download — claude.ai artifacts + full conversation text to a folder
 node session.js download --out "./out" --artifacts all --text full
 
+# download — files/videos from a KakaoTalk Business chat (each message's save button)
+node session.js download --out "./out" --url "https://business.kakao.com/.../chats/<id>" --kakao
+
 # chat — ask a web LLM and save the answer
 node session.js chat --site gemini --prompt-file "./prompt.txt" --out "./answer.txt"
 node session.js chat --site chatgpt --prompt-file "./prompt.txt"
@@ -94,7 +97,7 @@ Every command prints a single JSON line. `upload`/`download` include a `verify`/
 
 ### Notes per verb
 - **upload** picks the first `input[type=file]` by default (`--input-index N` to choose another). `--kakao` adds KakaoTalk‑specific completion polling and blocker detection (admin re‑auth expired / recipient withdrew). For a chat that sends a file on selection, attaching = sending — confirm the target before you run it.
-- **download** uses the Playwright `download` event + `saveAs()` (the CDP `setDownloadBehavior` path conflicts with Playwright and cancels the save). Artifact buttons are matched by `aria-label`; the selectors target claude.ai's Korean UI — adjust `SUFFIX`/selectors for other locales.
+- **download** uses the Playwright `download` event + `saveAs()` (the CDP `setDownloadBehavior` path conflicts with Playwright and cancels the save). For **claude.ai**, artifact buttons are matched by `aria-label` (selectors target the Korean UI — adjust `SUFFIX`/selectors for other locales). With **`--kakao`**, it downloads files/videos from a KakaoTalk Business chat by clicking each message's save button (`a.btn_save`); `--limit N` caps how many.
 - **chat** inserts the prompt with `execCommand('insertText')` (so multi‑line prompts don't submit early) and waits until the answer is **stable** (≥6 unchanged polls + no stop button). Add more sites in the `SITES` map.
 
 ---
