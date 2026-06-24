@@ -23,6 +23,7 @@ One small engine that attaches over **CDP** to a single **dedicated automation C
 | Verb | What it does | Example |
 |---|---|---|
 | **upload** | inject a file into a page's `<input type=file>` and wait for it to finish | send a file to a KakaoTalk Business chat |
+| **youtube** | drive the multi‑step YouTube Studio upload wizard end to end | upload a video to your channel (dry‑run, then publish) |
 | **download** | save a web app's files/artifacts to a folder | grab claude.ai artifacts + conversation, or files from a KakaoTalk Business chat |
 | **chat** | type a prompt, submit, and collect the streamed answer | ask ChatGPT / Gemini on the web and read the reply |
 | **status** | report the CDP connection, open tabs and per‑site login | health check |
@@ -88,6 +89,10 @@ node session.js download --out "./out" --artifacts all --text full
 # download — files/videos from a KakaoTalk Business chat (each message's save button)
 node session.js download --out "./out" --url "https://business.kakao.com/.../chats/<id>" --kakao
 
+# youtube — upload to YouTube Studio. Dry run first (stops before publishing), then publish.
+node session.js youtube --file "/path/to/video.mp4" --title-file "./title.txt" --desc-file "./desc.txt" --visibility unlisted
+node session.js youtube --file "/path/to/video.mp4" --title "My title" --visibility public --publish
+
 # chat — ask a web LLM and save the answer
 node session.js chat --site gemini --prompt-file "./prompt.txt" --out "./answer.txt"
 node session.js chat --site chatgpt --prompt-file "./prompt.txt"
@@ -97,6 +102,7 @@ Every command prints a single JSON line. `upload`/`download` include a `verify`/
 
 ### Notes per verb
 - **upload** picks the first `input[type=file]` by default (`--input-index N` to choose another). `--kakao` adds KakaoTalk‑specific completion polling and blocker detection (admin re‑auth expired / recipient withdrew). For a chat that sends a file on selection, attaching = sending — confirm the target before you run it.
+- **youtube** drives the Studio upload wizard (create → file → title/description → not‑for‑kids → next×3 → visibility → publish). YouTube Studio is Polymer (open shadow DOM), so Playwright CSS reaches in; title/description are the `#title-textarea #textbox` / `#description-textarea #textbox` contenteditables (the filename prefill is cleared, then re‑typed via `execCommand`). **Without `--publish` it stops right before publishing and writes screenshots** — do a dry run, review, then publish. `--visibility` defaults to `private`. Publishing is an irreversible external action — confirm before `--publish`.
 - **download** uses the Playwright `download` event + `saveAs()` (the CDP `setDownloadBehavior` path conflicts with Playwright and cancels the save). For **claude.ai**, artifact buttons are matched by `aria-label` (selectors target the Korean UI — adjust `SUFFIX`/selectors for other locales). With **`--kakao`**, it downloads files/videos from a KakaoTalk Business chat by clicking each message's save button (`a.btn_save`); `--limit N` caps how many.
 - **chat** inserts the prompt with `execCommand('insertText')` (so multi‑line prompts don't submit early) and waits until the answer is **stable** (≥6 unchanged polls + no stop button). Add more sites in the `SITES` map.
 

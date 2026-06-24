@@ -1,5 +1,5 @@
 ---
-description: "Attach over CDP to one dedicated automation Chrome (your own profile + remote-debugging port) and reuse its logged-in sessions to upload files, download artifacts, and chat (post & read) on web apps. One engine, different verbs. Use when asked to upload a file to a web chat, download claude.ai results, ask ChatGPT/Gemini on the web, or otherwise drive a logged-in browser. (Local, deterministic browser automation, no LLM, no API keys.)"
+description: "Attach over CDP to one dedicated automation Chrome (your own profile + remote-debugging port) and reuse its logged-in sessions to upload files, download artifacts, chat (post & read), and upload videos to YouTube Studio. One engine, different verbs. Use when asked to upload a file to a web chat, upload a video to YouTube, download claude.ai results, ask ChatGPT/Gemini on the web, or otherwise drive a logged-in browser. (Local, deterministic browser automation, no LLM, no API keys.)"
 user-invocable: true
 version: "1.0"
 last_updated: "2026-06-24"
@@ -15,7 +15,8 @@ Attach to **one dedicated automation Chrome** over CDP and reuse the logged-in s
 |---|---|
 | **status** | CDP connection, open tabs, per-site login (JSON) |
 | **upload** | inject a file into `<input type=file>` + wait for completion |
-| **download** | save claude.ai artifacts/conversation text to a folder |
+| **youtube** | drive the YouTube Studio upload wizard end to end (file→title/desc→audience→visibility→publish) |
+| **download** | save claude.ai artifacts/conversation text to a folder, or files from a KakaoTalk Business chat |
 | **chat** | type a prompt, submit, collect the stable answer (ChatGPT/Gemini) |
 
 - **No LLM, no API keys.** It reuses *your* browser login; you log in, it never types passwords.
@@ -40,6 +41,12 @@ If `cdp:false`, launch the automation Chrome (own profile + `--remote-debugging-
 node "{SKILL_DIR}/session.js" upload --file "<abs path>" [--url "<chat URL>"] [--kakao] [--input-index 0]
 ```
 `--kakao` adds KakaoTalk Business completion polling + blocker detection. **Outward action — confirm target & file before running**, then verify via the returned `ok`/screenshot.
+
+## 1-Y. youtube (YouTube Studio upload wizard)
+```
+node "{SKILL_DIR}/session.js" youtube --file "<mp4>" --title-file "<title.txt>"|--title "<s>" [--desc-file "<desc.txt>"] --visibility public|unlisted|private [--publish] [--shot-dir "<dir>"]
+```
+YouTube upload is a multi-step wizard (details → elements → checks → visibility), not a plain file input, so it has its own verb. Flow: create → upload video → set file → title/description (clear filename prefill, then type) → not-for-kids → next×3 → visibility → (publish). **Without `--publish` it stops right before publishing and saves screenshots (`yt_details.png`, `yt_visibility.png`)** — do a dry run, review, then publish. `--visibility` defaults to `private`. If not logged in, returns `blocked` → log in to `studio.youtube.com` in the browser. **Publishing is an irreversible external action — confirm before `--publish`.** (Selectors target YouTube Studio's Polymer DOM; some text selectors assume the Korean UI.)
 
 ## 2. download (claude.ai / KakaoTalk Business)
 ```
