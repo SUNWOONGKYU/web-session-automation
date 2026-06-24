@@ -1,5 +1,23 @@
 # web-session-automation
 
+> ## 🇰🇷 한국어 소개
+>
+> **내가 로그인해 둔 Chrome 인터넷 창을 컴퓨터가 대신 움직여 주는 도구입니다.**
+>
+> Chrome에 한 번만 로그인해 두면, 그다음부터는 컴퓨터가 그 창을 대신 클릭하고 입력해 줍니다. 비밀번호는 전혀 건드리지 않고, 이미 로그인돼 있는 화면을 그대로 빌려 쓰는 방식이죠.
+>
+> 하는 일은 세 가지인데 원리는 똑같습니다 — ① 카카오톡 비즈니스 채팅에 **파일 올리기**(upload) ② 클로드(Claude)에서 만든 결과물 **내려받기**(download) ③ ChatGPT·Gemini 같은 AI 사이트에 **질문을 써넣고 답 받아오기**(chat). API나 유료 키 없이, 그냥 내가 띄워 둔 Chrome 창만 컴퓨터가 대신 움직여서 처리합니다.
+>
+> **▶ 받아서 쓰는 법**
+> 1. 이 저장소에서 초록색 **Code → Download ZIP** 으로 내려받아 압축 풀기 (또는 `git clone`).
+> 2. **Node.js**(코드를 돌려 주는 무료 프로그램)를 설치하고, 폴더에서 `npm i playwright` → `npx playwright install chromium` 실행 (브라우저를 자동으로 움직이는 부품 설치).
+> 3. 아래 **Setup**의 명령으로 '자동화 전용' Chrome을 하나 띄우고, 쓸 사이트(카카오 비즈니스·Claude·ChatGPT·Gemini)에 **로그인 한 번**.
+> 4. 이제 `node session.js upload …` / `download …` / `chat …` 를 입력하면 컴퓨터가 그 Chrome 창을 대신 움직여 일을 처리합니다.
+>
+> 누구나 무료로 쓰도록 공개(MIT)했습니다. 자세한 명령어·예시는 아래 영문 안내에 있습니다.
+
+---
+
 One small engine that attaches over **CDP** to a single **dedicated automation Chrome** (your own profile + a remote‑debugging port), reuses the **logged‑in sessions** inside it, and does three things that are really the *same* technique with a different verb:
 
 | Verb | What it does | Example |
