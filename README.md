@@ -6,13 +6,13 @@
 >
 > Chrome에 한 번만 로그인해 두면, 그다음부터는 컴퓨터가 그 창을 대신 클릭하고 입력해 줍니다. 비밀번호는 전혀 건드리지 않고, 이미 로그인돼 있는 화면을 그대로 빌려 쓰는 방식이죠.
 >
-> 하는 일은 여러 가지인데 원리는 똑같습니다 — ① 카카오톡 비즈니스 채팅에 **파일 올리기**(upload) ② 클로드(Claude)에서 만든 결과물 **내려받기**(download) ③ ChatGPT·Gemini 같은 AI 사이트에 **질문을 써넣고 답 받아오기**(chat) ④ 유튜브에 **영상 올리기**(youtube) ⑤ 페이스북 내 프로필에 **글 임시저장·예약하고 성과 읽어오기**(facebook). API나 유료 키 없이, 그냥 내가 띄워 둔 Chrome 창만 컴퓨터가 대신 움직여서 처리합니다.
+> 하는 일은 여러 가지인데 원리는 똑같습니다 — ① 카카오톡 비즈니스 채팅에 **파일 올리기**(upload) ② 클로드(Claude)에서 만든 결과물 **내려받기**(download) ③ ChatGPT·Gemini 같은 AI 사이트에 **질문을 써넣고 답 받아오기**(chat) ④ 유튜브에 **영상 올리기**(youtube). API나 유료 키 없이, 그냥 내가 띄워 둔 Chrome 창만 컴퓨터가 대신 움직여서 처리합니다.
 >
 > **▶ 받아서 쓰는 법**
 > 1. 이 저장소에서 초록색 **Code → Download ZIP** 으로 내려받아 압축 풀기 (또는 `git clone`).
 > 2. **Node.js**(코드를 돌려 주는 무료 프로그램)를 설치하고, 폴더에서 `npm i playwright` → `npx playwright install chromium` 실행 (브라우저를 자동으로 움직이는 부품 설치).
-> 3. 아래 **Setup**의 명령으로 '자동화 전용' Chrome을 하나 띄우고, 쓸 사이트(카카오 비즈니스·Claude·ChatGPT·Gemini·유튜브·페이스북)에 **로그인 한 번**.
-> 4. 이제 `node session.js upload …` / `download …` / `chat …` / `youtube …` / `facebook …` 를 입력하면 컴퓨터가 그 Chrome 창을 대신 움직여 일을 처리합니다.
+> 3. 아래 **Setup**의 명령으로 '자동화 전용' Chrome을 하나 띄우고, 쓸 사이트(카카오 비즈니스·Claude·ChatGPT·Gemini·유튜브)에 **로그인 한 번**.
+> 4. 이제 `node session.js upload …` / `download …` / `chat …` / `youtube …` 를 입력하면 컴퓨터가 그 Chrome 창을 대신 움직여 일을 처리합니다.
 >
 > 누구나 무료로 쓰도록 공개(MIT)했습니다. 자세한 명령어·예시는 아래 영문 안내에 있습니다.
 
@@ -26,7 +26,6 @@ One small engine that attaches over **CDP** to a single **dedicated automation C
 | **youtube** | drive the multi‑step YouTube Studio upload wizard end to end | upload a video to your channel (dry‑run, then publish) |
 | **download** | save a web app's files/artifacts to a folder | grab claude.ai artifacts + conversation, or files from a KakaoTalk Business chat |
 | **chat** | type a prompt, submit, and collect the streamed answer | ask ChatGPT / Gemini on the web and read the reply |
-| **facebook** | draft / schedule a post on your own profile, and read its stats & insights back | queue a post for tomorrow, then measure it |
 | **status** | report the CDP connection, open tabs and per‑site login | health check |
 
 No LLM, no API keys, no credential handling — it drives **your** already‑logged‑in browser. You log in once in the dedicated Chrome; the engine just reuses the session.
@@ -63,7 +62,7 @@ google-chrome --user-data-dir="$HOME/.automation_chrome" \
   --remote-debugging-port=9222 --no-first-run --no-default-browser-check
 ```
 
-2) In that Chrome, **log in once** to whatever you'll automate (claude.ai, chatgpt.com, gemini.google.com, your KakaoTalk Business chat, studio.youtube.com, facebook.com, …). The session persists in the profile.
+2) In that Chrome, **log in once** to whatever you'll automate (claude.ai, chatgpt.com, gemini.google.com, your KakaoTalk Business chat, studio.youtube.com, …). The session persists in the profile.
 
 3) Check the connection:
 
@@ -97,13 +96,6 @@ node session.js youtube --file "/path/to/video.mp4" --title "My title" --visibil
 # chat — ask a web LLM and save the answer
 node session.js chat --site gemini --prompt-file "./prompt.txt" --out "./answer.txt"
 node session.js chat --site chatgpt --prompt-file "./prompt.txt"
-
-# facebook — draft / schedule a post on your own profile, and read the numbers back
-node session.js facebook status
-node session.js facebook draft    --text-file "./post.txt" --image "./cover.png" --shot-dir "./shots"
-node session.js facebook schedule --text-file "./post.txt" --date "Jul 23, 2026" --time "11:00 AM"
-node session.js facebook stats    --url "<post URL>"
-node session.js facebook insights --url "<content/insights URL>"
 ```
 
 Every command prints a single JSON line. `upload`/`download` include a `verify`/`screenshot` so you can confirm the result actually landed — **"the call returned" is not "it worked."**
@@ -112,7 +104,6 @@ Every command prints a single JSON line. `upload`/`download` include a `verify`/
 - **upload** picks the first `input[type=file]` by default (`--input-index N` to choose another). `--kakao` adds KakaoTalk‑specific completion polling and blocker detection (admin re‑auth expired / recipient withdrew). For a chat that sends a file on selection, attaching = sending — confirm the target before you run it.
 - **youtube** drives the Studio upload wizard (create → file → title/description → not‑for‑kids → next×3 → visibility → publish). YouTube Studio is Polymer (open shadow DOM), so Playwright CSS reaches in; title/description are the `#title-textarea #textbox` / `#description-textarea #textbox` contenteditables (the filename prefill is cleared, then re‑typed via `execCommand`). **Without `--publish` it stops right before publishing and writes screenshots** — do a dry run, review, then publish. `--visibility` defaults to `private`. Publishing is an irreversible external action — confirm before `--publish`.
 - **download** uses the Playwright `download` event + `saveAs()` (the CDP `setDownloadBehavior` path conflicts with Playwright and cancels the save). For **claude.ai**, artifact buttons are matched by `aria-label` (selectors target the Korean UI — adjust `SUFFIX`/selectors for other locales). With **`--kakao`**, it downloads files/videos from a KakaoTalk Business chat by clicking each message's save button (`a.btn_save`); `--limit N` caps how many.
-- **facebook** works on **your own personal profile**. `status`/`stats`/`insights` only read (metrics are scraped from the post dialog / insights page, with a screenshot for you to check — note that views are often not exposed on a personal profile, so reactions + comments + shares are the fallback). `draft`/`schedule` go composer → Next → `Save` or `Schedule for later` → `Schedule`; **the `Post` button is never clicked**, so nothing is ever published immediately. A personal-profile draft with an image can't be saved by just closing the composer (the image only uploads at post time) — hence the Next→Save path. Scheduling types the date/time via JS focus + keyboard (real clicks get eaten by the calendar overlay) and **aborts before committing** if the fields don't read back exactly. Results land in Content Library → Drafts / Scheduled. Selectors assume the English UI. **Automating a Facebook account is at your own risk under Meta's terms — own profile, human pace.**
 - **chat** inserts the prompt with `execCommand('insertText')` (so multi‑line prompts don't submit early) and waits until the answer is **stable** (≥6 unchanged polls + no stop button). Add more sites in the `SITES` map.
 
 ---
@@ -120,7 +111,7 @@ Every command prints a single JSON line. `upload`/`download` include a `verify`/
 ## Safety
 
 - Logins, 2FA and any "extra authentication" steps are done **by you** in the browser. The engine never types passwords.
-- `upload`, `chat`, `youtube` and `facebook` send things to the outside world — **confirm the target and content before running.**
+- `upload`, `chat` and `youtube` send things to the outside world — **confirm the target and content before running.**
 - This drives a real logged‑in browser. Treat it accordingly.
 
 ## Limitations
