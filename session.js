@@ -9,6 +9,7 @@
 //   upload   --file <path> [--url <chat>] [--input-index N] [--kakao]
 //   youtube  --file <mp4> --title-file <path>|--title <s> [--desc-file <path>] [--visibility public|unlisted|private] [--publish] [--shot-dir <dir>]
 //   chat     --site <chatgpt|gemini> --prompt-file <path> [--out <file>]
+//   facebook status | stats --url <post> | insights --url <insights> | draft ... | schedule ...
 //
 // Verified know-how:
 //   · Over connectOverCDP, CDP Browser.setDownloadBehavior conflicts with Playwright saveAs ('canceled').
@@ -49,7 +50,7 @@ const SITES = {
   gemini:  { url: 'https://gemini.google.com/app', input: 'div.ql-editor[contenteditable="true"]', answer: '.model-response-text, message-content', stop: 'button[aria-label*="중지"], button[aria-label*="Stop"]' },
 };
 
-async function getCtx(pw) { const b = await pw.chromium.connectOverCDP(CDP); return { b, ctx: b.contexts()[0] }; }
+async function getCtx(pw) { const b = await pw.chromium.connectOverCDP(CDP, { timeout: 120000 }); return { b, ctx: b.contexts()[0] }; }
 function findTab(ctx, re) { return ctx.pages().find(p => { try { return re.test(p.url()); } catch (e) { return false; } }); }
 async function withBrowser(fn) {
   const pw = loadPlaywright();
@@ -377,6 +378,174 @@ async function cmdChat(o) {
   });
 }
 
+// ───────────────────────── facebook (personal profile: read stats / save draft / schedule) ─────────────────────────
+// facebook status
+// facebook stats    --url <post URL> [--shot-dir <dir>]
+// facebook insights --url <content/insights URL> [--shot-dir <dir>]
+// facebook draft    --text-file <path> [--image <path>] [--url <fb URL>] [--shot-dir <dir>]
+// facebook schedule --text-file <path> [--image <path>] --date "Jul 23, 2026" --time "11:00 AM" [--url] [--shot-dir]
+//
+// FB-specific traps and how this handles them (verified in practice):
+//  · On a personal profile, "text + image draft" is NOT saved by just closing the composer (the image only
+//    uploads at post time) → you must go through Next → Save.
+//  · FB mounts several composer dialogs at once and state fragments across them → reload first, then finish
+//    the whole flow atomically in one process.
+//  · Scheduling: real clicks on the date/time fields get eaten by the calendar overlay → JS focus + keyboard
+//    type + Tab, and only commit once the values read back exactly.
+//  · Confirm buttons are matched by exact text ("Save" / "Schedule for later" / "Schedule").
+//    "Post" is never clicked automatically — that would publish immediately.
+//  · Where to manage results: Dashboard → Content → Content Library → Scheduled / Draft tabs.
+//  · Selectors assume the English UI; some regex also accept the Korean strings.
+async function cmdFacebook(o) {
+  const mode = o._[0];
+  const shotDir = (o['shot-dir'] && o['shot-dir'] !== true) ? o['shot-dir'] : os.tmpdir();
+  try { fs.mkdirSync(shotDir, { recursive: true }); } catch (e) {}
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  await withBrowser(async (ctx) => {
+    let page = ctx.pages().find(p => /facebook\.com/.test(p.url()));
+    if (!page) { page = await ctx.newPage(); await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 25000 }); }
+    await page.bringToFront().catch(() => {});
+    const shot = async (name) => { try { await page.screenshot({ path: path.join(shotDir, 'fb_' + name + '.png') }); } catch (e) {} };
+    const clickExact = (label) => page.evaluate(l => { const btn = [...document.querySelectorAll('[role="dialog"] [role="button"]')].find(x => (x.innerText || '').trim() === l && x.offsetParent !== null); if (btn) { btn.click(); return true; } return false; }, label);
+
+    if (mode === 'status') {
+      const st = await page.evaluate(() => ({
+        loggedIn: !document.querySelector('input[name="email"],input[type="password"]'),
+        hasComposer: [...document.querySelectorAll('[role="button"]')].some(e => /What's on your mind|무슨 생각/.test(e.textContent || '')),
+      }));
+      return emit({ ok: true, url: page.url(), ...st });
+    }
+
+    if (mode === 'stats') {
+      const url = (o.url && o.url !== true) ? o.url : null;
+      if (!url) return emit({ ok: false, error: 'facebook stats requires --url <post URL>' });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await sleep(4500);
+      // The post opens in a dialog and the metric bar sits below the body — scroll the inner container to load it.
+      await page.evaluate(async () => {
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+        const dlg = [...document.querySelectorAll('[role="dialog"]')].filter(d => d.offsetParent !== null).pop();
+        const scroller = dlg ? [...dlg.querySelectorAll('*')].find(e => e.scrollHeight > e.clientHeight + 80) : null;
+        for (let i = 0; i < 8; i++) { if (scroller) scroller.scrollTop += scroller.clientHeight * 0.8; else window.scrollBy(0, 600); await sleep(450); }
+      });
+      await sleep(1200);
+      await shot('stats');
+      const num = (s) => { if (s == null) return null; const m = String(s).replace(/,/g, '').match(/([\d.]+)\s*([KMB만천]?)/); if (!m) return null; let v = parseFloat(m[1]); const u = m[2]; if (u === 'K') v *= 1e3; else if (u === 'M') v *= 1e6; else if (u === 'B') v *= 1e9; else if (u === '천') v *= 1e3; else if (u === '만') v *= 1e4; return Math.round(v); };
+      const raw = await page.evaluate(() => {
+        const body = document.body.innerText || '';
+        const pick = (re) => { const m = body.match(re); return m ? m[1] : null; };
+        const labels = [...document.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label')).filter(Boolean);
+        const lbl = (re) => { for (const l of labels) { const m = l.match(re); if (m) return m[1]; } return null; };
+        // Reactions: sum the reaction-breakdown tooltips ("Like: 8 people", "Love: 1 person"), de-duplicated.
+        let reactSum = 0, reactHit = false; const seenR = new Set();
+        for (const l of [...new Set(labels)]) { const m = l.match(/:\s*([\d,]+)\s*(?:people|person|명)/i); if (m && !seenR.has(l)) { seenR.add(l); reactSum += parseInt(m[1].replace(/,/g, ''), 10); reactHit = true; } }
+        return {
+          views: pick(/([\d.,]+\s*[KMB만천]?)\s*(?:views|조회)/i) || lbl(/([\d.,]+\s*[KMB만천]?)\s*(?:views|조회)/i),
+          reactions: reactHit ? String(reactSum) : (lbl(/(?:All reactions?|모든 반응):?\s*([\d.,]+\s*[KMB만천]?)/i)),
+          comments: pick(/([\d.,]+\s*[KMB만천]?)\s*(?:comments?|댓글)/i) || lbl(/([\d.,]+)\s*comments?/i),
+          shares: pick(/([\d.,]+\s*[KMB만천]?)\s*(?:shares?|공유)/i) || lbl(/([\d.,]+)\s*shares?/i),
+          loggedIn: !document.querySelector('input[name="email"],input[type="password"]'),
+        };
+      });
+      const out = { views: num(raw.views), reactions: num(raw.reactions), comments: num(raw.comments), shares: num(raw.shares) };
+      const engagement = (out.reactions || 0) + (out.comments || 0) + (out.shares || 0);
+      const got = out.views != null || out.reactions != null || out.comments != null || out.shares != null;
+      const ok = raw.loggedIn && got;
+      return emit({ ok, mode: 'stats', url, ...out, engagement, viewsAvailable: out.views != null, raw, loggedIn: raw.loggedIn, checkedAt: new Date().toISOString(), shot: path.join(shotDir, 'fb_stats.png'), note: ok ? (out.views != null ? 'scraped, views included' : 'views not shown (personal profile) → track reactions/comments/shares instead. Check fb_stats.png') : (raw.loggedIn ? 'no metrics found — check fb_stats.png' : 'login required — log in to facebook.com in the automation Chrome') });
+    }
+
+    if (mode === 'insights') {
+      const url = (o.url && o.url !== true) ? o.url : null;
+      if (!url) return emit({ ok: false, error: 'facebook insights requires --url <content/insights URL>' });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+      // Wait for the insights content to render (Meta splash → render). Poll up to ~30s for "Views".
+      let insReady = false;
+      for (let i = 0; i < 30; i++) { await sleep(1000); insReady = await page.evaluate(() => { const t = document.body.innerText || ''; return /(^|\n)Views(\n|$)/.test(t) || /조회수|조회 수/.test(t); }); if (insReady) break; }
+      await sleep(1500);
+      await page.evaluate(async () => { const sleep = ms => new Promise(r => setTimeout(r, ms)); for (let i = 0; i < 6; i++) { window.scrollBy(0, 900); await sleep(500); } window.scrollTo(0, 0); await sleep(300); });
+      await sleep(1500);
+      await shot('insights');
+      const d = await page.evaluate(() => {
+        const lines = (document.body.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+        const idx = t => lines.findIndex(l => l === t);
+        const N = s => { if (s == null) return null; const m = String(s).replace(/,/g, '').match(/^([\d.]+)$/); return m ? parseFloat(m[1]) : null; };
+        const after = (t, k = 4) => { const i = idx(t); if (i < 0) return null; for (let j = i + 1; j < Math.min(i + k, lines.length); j++) { const v = N(lines[j]); if (v != null) return v; } return null; };
+        const before = (t, k = 4) => { const i = idx(t); if (i < 0) return null; for (let j = i - 1; j >= Math.max(0, i - k); j--) { const v = N(lines[j]); if (v != null) return v; } return null; };
+        let reactByType = null; const ri = idx('Reaction by type');
+        if (ri >= 0) { const nums = []; for (let j = ri + 1; j < lines.length && nums.length < 7; j++) { const v = N(lines[j]); if (v != null) nums.push(v); } if (nums.length >= 2) reactByType = { like: nums[0], love: nums[1], care: nums[2], haha: nums[3], wow: nums[4], sad: nums[5], angry: nums[6] }; }
+        const age = {}; for (let i = 0; i < lines.length; i++) { if (/^\d{2}-\d{2}$|^65\+$|^18-24$/.test(lines[i])) { const m = (lines[i + 1] || '').match(/^([\d.]+)%$/); if (m) age[lines[i]] = parseFloat(m[1]); } }
+        return {
+          views: after('Views'), viewers: after('Viewers'),
+          reactions: before('Reactions'), clicks: before('Clicks'), comments: before('Comments'), shares: before('Shares'),
+          linkClicks: before('Link clicks'), followers: before('Followers'), nonFollowers: before('Non-followers'),
+          reactByType, age, loggedIn: !document.querySelector('input[name="email"],input[type="password"]'),
+        };
+      });
+      const eng = (d.reactions || 0) + (d.clicks || 0) + (d.comments || 0) + (d.shares || 0);
+      const ok = d.loggedIn && d.views != null;
+      return emit({ ok, mode: 'insights', url, ...d, engagement: eng, checkedAt: new Date().toISOString(), shot: path.join(shotDir, 'fb_insights.png'), note: ok ? 'insights scraped' : (d.loggedIn ? 'no metrics found — check fb_insights.png (layout may have changed)' : 'login required') });
+    }
+
+    if (mode !== 'draft' && mode !== 'schedule') return emit({ ok: false, error: 'facebook mode must be status|stats|insights|draft|schedule', got: mode || '(none)' });
+
+    const textFile = o['text-file'];
+    if (!textFile || textFile === true) return emit({ ok: false, error: '--text-file <path> required' });
+    const text = fs.readFileSync(textFile, 'utf8').replace(/\r\n/g, '\n').trim();
+
+    // 1) Reload so we start from a single, unfragmented composer state
+    await page.goto((o.url && o.url !== true) ? o.url : 'https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await sleep(3500);
+    // 2) Open the composer
+    const opened = await page.evaluate(() => { const t = [...document.querySelectorAll('[role="button"]')].find(e => /What's on your mind|무슨 생각/.test(e.textContent || '')); if (t) { t.click(); return true; } return false; });
+    if (!opened) return emit({ ok: false, error: 'composer trigger not found — check that the automation Chrome is logged in to Facebook' });
+    await sleep(2500);
+    // 3) Type the body
+    const ed = page.locator('div[contenteditable="true"][role="textbox"]').first();
+    await ed.click(); await sleep(300);
+    await page.keyboard.insertText(text); await sleep(800);
+    const textLen = await ed.innerText().then(t => t.length).catch(() => 0);
+    // 4) Attach an image (optional)
+    let blob = 0;
+    if (o.image && o.image !== true) {
+      await page.locator('input[type="file"]').nth(1).setInputFiles(o.image);
+      for (let i = 0; i < 12; i++) { await sleep(800); blob = await page.evaluate(() => document.querySelectorAll('[role="dialog"] img[src^="blob:"]').length); if (blob) break; }
+    }
+    await shot('staged');
+    // 5) Next → Post settings
+    await page.evaluate(() => { const ds = [...document.querySelectorAll('[role="dialog"]')].filter(d => d.offsetParent !== null); const s1 = ds.find(d => [...d.querySelectorAll('[role="button"]')].some(x => (x.innerText || '').trim() === 'Add to your post')); const nx = s1 && [...s1.querySelectorAll('[role="button"]')].find(x => (x.innerText || '').trim() === 'Next' && x.offsetParent !== null); if (nx) nx.click(); });
+    await sleep(2800);
+
+    if (mode === 'draft') {
+      const saved = await clickExact('Save'); await sleep(3500);
+      await shot('draft_done');
+      const ok = await page.evaluate(() => /saved as a draft|임시 보관|draft/i.test(document.body.innerText));
+      return emit({ ok, mode: 'draft', textLen, imageStaged: blob > 0, savedClicked: saved, note: ok ? 'draft saved (check Content Library → Drafts)' : 'no draft confirmation toast — verify manually' });
+    }
+
+    // mode === 'schedule'
+    const date = (o.date && o.date !== true) ? o.date : null;
+    const time = (o.time && o.time !== true) ? o.time : null;
+    if (!date || !time) return emit({ ok: false, error: 'schedule requires --date "Jul 23, 2026" --time "11:00 AM"' });
+    await page.evaluate(() => { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n; while (n = w.nextNode()) { if (n.textContent.trim() === 'Scheduling options') { let el = n.parentElement; for (let i = 0; i < 8 && el; i++) { if ((el.getAttribute && el.getAttribute('role') === 'button') || el.tabIndex >= 0) { el.click(); return; } el = el.parentElement; } n.parentElement.click(); return; } } });
+    await sleep(2600);
+    const setInput = async (m, val) => { const h = await page.evaluateHandle(mm => { const i = [...document.querySelectorAll('[role="dialog"] input')].find(x => new RegExp(mm).test(x.value || '')); if (i) i.focus(); return i || null; }, m); if (!h.asElement()) return; await sleep(250); await page.keyboard.press('Control+A'); await sleep(120); await page.keyboard.press('Delete'); await sleep(120); await page.keyboard.type(val, { delay: 60 }); await sleep(350); await page.keyboard.press('Tab'); await sleep(500); };
+    await setInput('202\\d', date); await sleep(400);
+    await setInput('(AM|PM)', time); await sleep(700);
+    const vals = await page.evaluate(() => [...document.querySelectorAll('[role="dialog"] input')].filter(i => /202\d|AM|PM/.test(i.value || '')).map(i => i.value));
+    const nDialogs = await page.evaluate(() => [...document.querySelectorAll('[role="dialog"] input')].filter(i => /202\d/.test(i.value || '')).length);
+    await shot('schedule_pre');
+    const norm = s => s.replace(/\s/g, '').toUpperCase();
+    const dateOK = vals.some(v => norm(v) === norm(date));
+    const timeOK = vals.some(v => norm(v) === norm(time));
+    if (!(dateOK && timeOK && nDialogs === 1)) return emit({ ok: false, mode: 'schedule', error: 'date/time did not set cleanly — aborting before commit', vals, nDialogs });
+    const commit = await clickExact('Schedule for later'); await sleep(2500);
+    const finalize = await clickExact('Schedule'); await sleep(4500);
+    await shot('schedule_done');
+    const ok = await page.evaluate(() => /Your post is scheduled|예약/i.test(document.body.innerText));
+    return emit({ ok, mode: 'schedule', date, time, textLen, imageStaged: blob > 0, commit, finalize, note: ok ? 'scheduled (check Content Library → Scheduled)' : 'no scheduling confirmation — verify in Content Library → Scheduled' });
+  });
+}
+
 // ───────────────────────── main ─────────────────────────
 (async () => {
   const argv = process.argv.slice(2);
@@ -387,6 +556,7 @@ async function cmdChat(o) {
     else if (cmd === 'upload') await cmdUpload(o);
     else if (cmd === 'youtube') await cmdYoutube(o);
     else if (cmd === 'chat') await cmdChat(o);
-    else emit({ error: 'usage: status | download | upload | youtube | chat', got: cmd || '(none)' });
+    else if (cmd === 'facebook') await cmdFacebook(o);
+    else emit({ error: 'usage: status | download | upload | youtube | chat | facebook', got: cmd || '(none)' });
   } catch (e) { emit({ ok: false, error: String(e && e.message || e) }); process.exit(1); }
 })();

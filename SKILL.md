@@ -1,8 +1,8 @@
 ---
-description: "Attach over CDP to one dedicated automation Chrome (your own profile + remote-debugging port) and reuse its logged-in sessions to upload files, download artifacts, chat (post & read), and upload videos to YouTube Studio. One engine, different verbs. Use when asked to upload a file to a web chat, upload a video to YouTube, download claude.ai results, ask ChatGPT/Gemini on the web, or otherwise drive a logged-in browser. (Local, deterministic browser automation, no LLM, no API keys.)"
+description: "Attach over CDP to one dedicated automation Chrome (your own profile + remote-debugging port) and reuse its logged-in sessions to upload files, download artifacts, chat (post & read), upload videos to YouTube Studio, and draft/schedule/measure Facebook posts. One engine, different verbs. Use when asked to upload a file to a web chat, upload a video to YouTube, download claude.ai results, ask ChatGPT/Gemini on the web, draft or schedule a Facebook post, or otherwise drive a logged-in browser. (Local, deterministic browser automation, no LLM, no API keys.)"
 user-invocable: true
-version: "1.0"
-last_updated: "2026-06-24"
+version: "1.2"
+last_updated: "2026-07-27"
 ---
 
 # /web-session-automation — drive a logged-in browser: upload · download · chat
@@ -18,6 +18,7 @@ Attach to **one dedicated automation Chrome** over CDP and reuse the logged-in s
 | **youtube** | drive the YouTube Studio upload wizard end to end (file→title/desc→audience→visibility→publish) |
 | **download** | save claude.ai artifacts/conversation text to a folder, or files from a KakaoTalk Business chat |
 | **chat** | type a prompt, submit, collect the stable answer (ChatGPT/Gemini) |
+| **facebook** | save a draft / schedule a post on your own profile, and read back its stats & insights |
 
 - **No LLM, no API keys.** It reuses *your* browser login; you log in, it never types passwords.
 - An elevated/admin everyday Chrome refuses CDP attach — use a **dedicated profile** automation Chrome.
@@ -26,7 +27,7 @@ Attach to **one dedicated automation Chrome** over CDP and reuse the logged-in s
 ```
 web-session-automation/
   ├─ SKILL.md       ← this orchestration file
-  └─ session.js     ← engine: status / download / upload / chat (Node + Playwright)
+  └─ session.js     ← engine: status / download / upload / youtube / chat / facebook (Node + Playwright)
 ```
 Config: env `CDP_URL` (default `http://localhost:9222`), `PW_PATH` (playwright module path if unresolved).
 
@@ -62,6 +63,16 @@ claude.ai artifact buttons matched by `aria-label`; with `--kakao`, save buttons
 node "{SKILL_DIR}/session.js" chat --site chatgpt|gemini --prompt-file "<file>" [--out "<file>"]
 ```
 Pass the prompt as a file (avoids escaping / early submit). Waits for a stable answer. If not logged in, returns `blocked: login required` → log in once in the browser.
+
+## 4. facebook (own profile: draft / schedule / read stats)
+```
+node "{SKILL_DIR}/session.js" facebook status
+node "{SKILL_DIR}/session.js" facebook stats    --url "<post URL>" [--shot-dir "<dir>"]
+node "{SKILL_DIR}/session.js" facebook insights --url "<content/insights URL>" [--shot-dir "<dir>"]
+node "{SKILL_DIR}/session.js" facebook draft    --text-file "<body.txt>" [--image "<img>"] [--shot-dir "<dir>"]
+node "{SKILL_DIR}/session.js" facebook schedule --text-file "<body.txt>" [--image "<img>"] --date "Jul 23, 2026" --time "11:00 AM"
+```
+Read modes (`status`/`stats`/`insights`) only look; write modes (`draft`/`schedule`) never publish immediately — **`Post` is never clicked**, only `Save` or `Schedule for later` → `Schedule`. `schedule` re-reads the date/time fields and **aborts before committing** if they didn't set cleanly. Everything lands in Content Library → Drafts / Scheduled; screenshots (`fb_staged.png`, `fb_draft_done.png`, `fb_schedule_pre.png`, …) go to `--shot-dir`. Selectors assume the English UI. **Automating your account is at your own risk under Meta's terms — use it on your own profile, at human pace.**
 
 ## Adding sites
 Add `{url, input, answer, stop}` selectors to the `SITES` map in `session.js` to support more chat targets. Upload/download depend on the target page's file input / download-button pattern (locale-specific selectors may need adjusting).
