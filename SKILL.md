@@ -9,7 +9,7 @@ Attach to **one dedicated automation Chrome** over CDP and reuse the logged-in s
 
 > Foundation = one automation Chrome. Launch Chrome with your own profile dir + `--remote-debugging-port=9222`; log in once to the sites you'll use (claude.ai, chatgpt.com, gemini.google.com, a KakaoTalk Business chat, …). Every verb connects with `connectOverCDP` and drives the relevant tab.
 
-This skill follows the open Agent Skills format and is host-neutral. Use it from Claude Code, Codex/ChatGPT desktop, Codex CLI, or Gemini CLI. Resolve `<SKILL_ROOT>` to the absolute directory containing this `SKILL.md`; do not assume the current working directory is the skill directory.
+This skill follows the open Agent Skills format and is host-neutral. Use it from Claude Code, Codex/ChatGPT desktop, Codex CLI, or Antigravity CLI. Resolve `<SKILL_ROOT>` to the absolute directory containing this `SKILL.md`; do not assume the current working directory is the skill directory.
 
 | Verb | Does |
 |---|---|
