@@ -1,0 +1,7 @@
+interface:
+  display_name: "웹세션 자동화"
+  short_description: "로그인된 Chrome의 반복 웹 작업을 자동화합니다"
+  default_prompt: "Use $web-session-automation to automate this task in my logged-in Chrome and stop before any irreversible final action."
+
+policy:
+  allow_implicit_invocation: true

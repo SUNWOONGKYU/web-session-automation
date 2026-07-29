@@ -2,17 +2,29 @@
 
 > ## 🇰🇷 한국어 소개
 >
-> **내가 로그인해 둔 Chrome 인터넷 창을 컴퓨터가 대신 움직여 주는 도구입니다.**
+> **내가 로그인해 둔 Chrome 인터넷 창을 AI가 대신 움직여 주는 스킬입니다.**
 >
 > Chrome에 한 번만 로그인해 두면, 그다음부터는 컴퓨터가 그 창을 대신 클릭하고 입력해 줍니다. 비밀번호는 전혀 건드리지 않고, 이미 로그인돼 있는 화면을 그대로 빌려 쓰는 방식이죠.
 >
 > 하는 일은 여러 가지인데 원리는 똑같습니다 — ① 카카오톡 비즈니스 채팅에 **파일 올리기**(upload) ② 클로드(Claude)에서 만든 결과물 **내려받기**(download) ③ ChatGPT·Gemini 같은 AI 사이트에 **질문을 써넣고 답 받아오기**(chat) ④ 유튜브에 **영상 올리기**(youtube) ⑤ 페이스북 내 프로필에 **글 임시저장·예약하고 성과 읽어오기**(facebook). API나 유료 키 없이, 그냥 내가 띄워 둔 Chrome 창만 컴퓨터가 대신 움직여서 처리합니다.
 >
-> **▶ 받아서 쓰는 법**
-> 1. 이 저장소에서 초록색 **Code → Download ZIP** 으로 내려받아 압축 풀기 (또는 `git clone`).
-> 2. **Node.js**(코드를 돌려 주는 무료 프로그램)를 설치하고, 폴더에서 `npm i playwright` → `npx playwright install chromium` 실행 (브라우저를 자동으로 움직이는 부품 설치).
-> 3. 아래 **Setup**의 명령으로 '자동화 전용' Chrome을 하나 띄우고, 쓸 사이트(카카오 비즈니스·Claude·ChatGPT·Gemini·유튜브·페이스북)에 **로그인 한 번**.
-> 4. 이제 `node session.js upload …` / `download …` / `chat …` / `youtube …` / `facebook …` 를 입력하면 컴퓨터가 그 Chrome 창을 대신 움직여 일을 처리합니다.
+> 이 저장소는 개방형 **Agent Skills** 형식을 사용하므로 **Claude Code, Codex/ChatGPT 데스크탑, Codex CLI, Gemini CLI**에서 같은 스킬을 사용할 수 있습니다. `session.js`는 특정 AI에 종속되지 않은 Node.js 실행 파일입니다.
+>
+> **▶ 한 번 설치해서 세 AI에서 함께 쓰는 법**
+> 1. [Node.js 18 이상](https://nodejs.org/)과 Git을 설치합니다.
+> 2. 터미널에서 아래 명령을 차례로 실행합니다.
+>
+> ```bash
+> git clone https://github.com/SUNWOONGKYU/web-session-automation.git
+> cd web-session-automation
+> npm install
+> npm run install-skill
+> ```
+>
+> 설치 프로그램은 현재 저장소를 `~/.agents/skills/`와 `~/.claude/skills/`에 연결합니다. 따라서 저장소 폴더를 설치 후 옮기거나 지우지 마세요. 기존에 같은 이름의 스킬 폴더가 있으면 덮어쓰지 않고 멈춥니다.
+>
+> 3. 아래 **Setup**의 명령으로 '자동화 전용' Chrome을 하나 띄우고, 쓸 사이트(카카오 비즈니스·Claude·ChatGPT·Gemini·유튜브·페이스북)에 **로그인 한 번** 합니다.
+> 4. Claude Code·Codex·Gemini에서 “웹세션 자동화 스킬을 사용해서 … 해줘”라고 요청합니다. AI는 `session.js`를 실행하고, 되돌릴 수 없는 마지막 동작 전에는 멈춰 확인을 요청합니다.
 >
 > 누구나 무료로 쓰도록 공개(MIT)했습니다. 자세한 명령어·예시는 아래 영문 안내에 있습니다.
 
@@ -31,7 +43,7 @@ One small engine that attaches over **CDP** to a single **dedicated automation C
 
 No LLM, no API keys, no credential handling — it drives **your** already‑logged‑in browser. You log in once in the dedicated Chrome; the engine just reuses the session.
 
-> Originally built as a Claude Code skill (`SKILL.md` included), but `session.js` is a standalone Node CLI you can run anywhere.
+> The `SKILL.md` follows the open Agent Skills format. The same repository works with Claude Code, Codex/ChatGPT desktop, Codex CLI, and Gemini CLI; `session.js` remains a standalone Node CLI.
 
 ---
 
@@ -44,8 +56,26 @@ Downloading a file, uploading a file, and chatting with a web LLM look like diff
 ## Requirements
 
 - **Node.js** 18+
-- **Playwright**: `npm i playwright && npx playwright install chromium`
+- **Playwright**: run `npm install` in this repository. A separate Playwright browser download is not required because the engine attaches to your installed Chrome over CDP.
 - A **dedicated Chrome** launched with remote debugging (see below). Do **not** point this at your everyday Chrome — an elevated/admin Chrome refuses CDP attach, and you don't want automation touching your main profile.
+
+## Install as an Agent Skill
+
+Clone the repository, install the Node dependency, and link the same working copy into the common Agent Skills locations:
+
+```bash
+git clone https://github.com/SUNWOONGKYU/web-session-automation.git
+cd web-session-automation
+npm install
+npm run install-skill
+```
+
+The installer links this folder to:
+
+- `~/.agents/skills/web-session-automation` for Codex and Gemini CLI
+- `~/.claude/skills/web-session-automation` for Claude Code
+
+It works on macOS, Linux, and Windows. It never overwrites an existing skill folder. Keep the cloned repository in place after installation; run `git pull` there to update all three hosts at once.
 
 ## Setup
 
