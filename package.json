@@ -1,6 +1,6 @@
 {
   "name": "web-session-automation",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "private": true,
   "description": "Drive a dedicated logged-in Chrome over CDP with Playwright.",
   "license": "MIT",
