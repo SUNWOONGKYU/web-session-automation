@@ -10,8 +10,18 @@ const installHome = process.env.WEB_SESSION_SKILL_HOME
   : os.homedir();
 const targets = [
   {
-    host: 'Codex + Gemini CLI',
+    host: 'Codex / ChatGPT desktop',
     path: path.join(installHome, '.agents', 'skills', 'web-session-automation'),
+  },
+  {
+    host: 'Antigravity CLI',
+    path: path.join(
+      installHome,
+      '.gemini',
+      'antigravity-cli',
+      'skills',
+      'web-session-automation',
+    ),
   },
   {
     host: 'Claude Code',
