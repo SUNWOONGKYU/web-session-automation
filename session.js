@@ -8,7 +8,7 @@
 //   download --out <dir> [--url <chat>] [--artifacts all|names|none] [--names "a|b|c"] [--text none|handoff|full|both] [--kakao] [--limit N]
 //   upload   --file <path> [--url <chat>] [--input-index N] [--kakao]
 //   youtube  --file <mp4> --title-file <path>|--title <s> [--desc-file <path>] [--visibility public|unlisted|private] [--publish] [--shot-dir <dir>]
-//   chat     --site <chatgpt|gemini> --prompt-file <path> [--out <file>]
+//   chat     --site <chatgpt|gemini> --prompt-file <path> [--url <conversation URL>] [--out <file>] [--timeout <seconds>]
 //   facebook status | stats --url <post> | insights --url <insights> | draft ... | schedule ...
 //
 // Verified know-how:
@@ -16,7 +16,19 @@
 //     → Listen to the Playwright 'download' event and call download.saveAs() to write the file.
 //   · claude.ai artifact download buttons have aria-label ending in the download word (visible text is an icon font).
 //   · For chat input, insert text via execCommand('insertText') to avoid keyboard.type '\n' early-submit.
-//   · Collect the answer after it is stable (>=6 unchanged polls) and the stop button is gone.
+//   · Collect the answer after it is stable and generation has finished.
+//   · chat used to mis-report success. Three traps, all fixed:
+//     1) Nothing verified the submit, so a failed insert/Enter still fell through to the
+//        collector, which returned the PREVIOUS answer with ok:true. Submission is now
+//        confirmed (new user message | emptied composer | generation started), and the
+//        answer must differ from a baseline snapshot before ok can be true.
+//     2) Message counts are unusable for that baseline — ChatGPT virtualises the DOM, so the
+//        rendered message count does not grow monotonically. Compare the last answer's text.
+//     3) ChatGPT reuses one submit button (#composer-submit-button) and flips its data-testid
+//        between send-button and stop-button, so matching [data-testid="send-button"] alone
+//        never finds it; generation state is read from that toggle too.
+//   · Login cannot be inferred from the URL: signed out, the site still redirects to its root.
+//     Check for a sign-in affordance on the page (SITES[*].loggedOut).
 //
 // Config via env:  CDP_URL (default http://localhost:9222) · PW_PATH (path to the playwright module if not resolvable)
 
@@ -46,9 +58,48 @@ function args(argv) {
 
 // Site profiles for the `chat` verb — extend with more sites here.
 const SITES = {
-  chatgpt: { url: 'https://chatgpt.com/', input: '#prompt-textarea', answer: '[data-message-author-role="assistant"]', stop: '[data-testid="stop-button"]' },
-  gemini:  { url: 'https://gemini.google.com/app', input: 'div.ql-editor[contenteditable="true"]', answer: '.model-response-text, message-content', stop: 'button[aria-label*="중지"], button[aria-label*="Stop"]' },
+  chatgpt: {
+    url: 'https://chatgpt.com/', input: '#prompt-textarea',
+    answer: '[data-message-author-role="assistant"]',
+    user: '[data-message-author-role="user"]',
+    stop: '[data-testid="stop-button"]',
+    submit: '#composer-submit-button, [data-testid="send-button"]',
+    // Only present when signed out. A signed-out visit still lands on the root URL,
+    // so the URL alone cannot tell you whether you are logged in.
+    loggedOut: 'button:has-text("Log in"), button:has-text("로그인"), a[href*="/auth/login"]',
+  },
+  gemini: {
+    url: 'https://gemini.google.com/app', input: 'div.ql-editor[contenteditable="true"]',
+    answer: '.model-response-text, message-content',
+    user: 'user-query, .query-text',
+    stop: 'button[aria-label*="중지"], button[aria-label*="Stop"]',
+    submit: 'button[aria-label*="Send"], button[aria-label*="보내기"], button.send-button',
+    loggedOut: 'a[href*="ServiceLogin"], a[href*="accounts.google.com/signin"]',
+  },
 };
+
+// Generating? Either the stop selector is present, or the submit button has toggled
+// into its stop state. ChatGPT reuses one button (#composer-submit-button) and flips
+// its data-testid between send-button and stop-button.
+async function isGenerating(page, site) {
+  try {
+    if (await page.locator(site.stop).count() > 0) return true;
+  } catch (e) {}
+  try {
+    return await page.evaluate(() => {
+      const b = document.querySelector('#composer-submit-button');
+      if (!b) return false;
+      return b.getAttribute('data-testid') === 'stop-button'
+        || /Stop|중지/i.test(b.getAttribute('aria-label') || '');
+    });
+  } catch (e) { return false; }
+}
+
+async function lastAnswer(page, site) {
+  const n = await page.locator(site.answer).count();
+  if (!n) return '';
+  return (await page.locator(site.answer).nth(n - 1).innerText().catch(() => '')) || '';
+}
 
 async function getCtx(pw) { const b = await pw.chromium.connectOverCDP(CDP, { timeout: 120000 }); return { b, ctx: b.contexts()[0] }; }
 function findTab(ctx, re) { return ctx.pages().find(p => { try { return re.test(p.url()); } catch (e) { return false; } }); }
@@ -67,11 +118,26 @@ async function cmdStatus() {
       try { url = p.url(); title = await p.title(); } catch (e) {}
       tabs.push({ url, title });
     }
+    // Login state from the tab URL alone gives false positives: a signed-out visit is
+    // redirected to the site root, which passes a /login|accounts|auth/ test. When a tab
+    // for the site is open, check the page for a sign-in affordance instead.
     const logins = {};
-    for (const [k, v] of Object.entries(SITES)) logins[k] = tabs.some(t => t.url.includes(new URL(v.url).host) && !/login|accounts|auth/i.test(t.url));
+    for (const [k, v] of Object.entries(SITES)) {
+      const host = new URL(v.url).host;
+      const pg = ctx.pages().find(p => { try { return p.url().includes(host); } catch (e) { return false; } });
+      if (!pg) { logins[k] = null; continue; }   // null = no tab open, cannot tell
+      if (/login|accounts|auth|signin|ServiceLogin/i.test(pg.url())) { logins[k] = false; continue; }
+      if (v.loggedOut) {
+        const out = await pg.locator(v.loggedOut).count().catch(() => 0);
+        logins[k] = out === 0;
+      } else logins[k] = true;
+    }
     logins['claude.ai'] = tabs.some(t => /claude\.ai\/chat/.test(t.url));
     logins['business.kakao'] = tabs.some(t => /business\.kakao/.test(t.url) && !/login|accounts/i.test(t.url));
-    emit({ cdp: true, tab_count: tabs.length, tabs, logins });
+    emit({
+      cdp: true, tab_count: tabs.length, tabs, logins,
+      note: 'logins[site] === null means no tab for that site is open, so login state is unknown. true means a sign-in button was actually absent from the page.',
+    });
   });
 }
 
@@ -354,27 +420,119 @@ async function cmdChat(o) {
   const site = SITES[o.site]; if (!site) throw new Error('--site must be chatgpt|gemini');
   const prompt = (o['prompt-file'] && o['prompt-file'] !== true) ? fs.readFileSync(o['prompt-file'], 'utf-8') : (o.prompt && o.prompt !== true ? o.prompt : '');
   if (!prompt) throw new Error('--prompt-file <path> or --prompt <text> required');
+  const timeoutMs = (parseInt(o.timeout, 10) || 420) * 1000;
   await withBrowser(async (ctx) => {
-    let page = findTab(ctx, new RegExp(new URL(site.url).host.replace(/\./g, '\\.')));
+    // Target tab: --url picks a specific conversation, otherwise any tab on the site, otherwise open one.
+    let page = null;
+    if (o.url && o.url !== true) {
+      const re = new RegExp(String(o.url).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      page = findTab(ctx, re);
+      if (!page) { page = await ctx.newPage(); await page.goto(o.url, { waitUntil: 'domcontentloaded' }); await page.waitForTimeout(5000); }
+    }
+    if (!page) page = findTab(ctx, new RegExp(new URL(site.url).host.replace(/\./g, '\\.')));
     if (!page) { page = await ctx.newPage(); await page.goto(site.url, { waitUntil: 'domcontentloaded' }); await page.waitForTimeout(4000); }
     await page.bringToFront(); await page.waitForTimeout(1500);
-    if (/login|accounts|auth/i.test(page.url())) { emit({ ok: false, blocked: true, reason: 'login required', site: o.site }); return; }
+
+    // Login: the URL alone is not enough (a signed-out visit redirects to the root), so
+    // also look for a sign-in affordance on the page.
+    if (/login|accounts|auth|signin|ServiceLogin/i.test(page.url())) { emit({ ok: false, blocked: true, reason: 'login required', site: o.site, url: page.url() }); return; }
+    if (site.loggedOut && await page.locator(site.loggedOut).count().catch(() => 0) > 0) {
+      emit({ ok: false, blocked: true, reason: 'login required — sign in to this site once in the automation Chrome, then retry (this tool never types credentials)', site: o.site, url: page.url() });
+      return;
+    }
+    // If --url was given but we did not land on it, stop. Never silently write the prompt
+    // into a different or brand-new conversation.
+    // NOTE: comparing the URL is not sufficient (observed): navigating to a non-existent
+    // conversation id can leave /c/<id> in the address bar while rendering an EMPTY new chat,
+    // which passes a URL check. Decide reachability by conversation history instead — an
+    // existing conversation always has at least one message.
+    if (o.url && o.url !== true) {
+      const id = String(o.url).split('?')[0].split('/').pop();
+      const urlOk = !id || page.url().includes(id);
+      const msgs = (await page.locator(site.user).count().catch(() => 0))
+                 + (await page.locator(site.answer).count().catch(() => 0));
+      const needHistory = /\/c\//.test(String(o.url));   // an existing-conversation URL was given
+      if (!urlOk || (needHistory && msgs === 0)) {
+        emit({
+          ok: false, blocked: true,
+          reason: 'requested conversation is not reachable (different account, deleted, or empty); refused to post into another conversation',
+          want: o.url, got: page.url(), messages_found: msgs,
+        });
+        return;
+      }
+    }
+
+    // Baseline. Message counts are not usable: ChatGPT virtualises the DOM, so the number of
+    // rendered messages does not grow monotonically. Use the text of the last answer instead.
+    const baseUser = await page.locator(site.user).count().catch(() => 0);
+    const prevAnswer = await lastAnswer(page, site);
+
+    // Insert the prompt and verify it actually landed.
     const input = page.locator(site.input).first();
     await input.click();
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Delete');
     await page.evaluate((t) => document.execCommand('insertText', false, t), prompt);
-    await page.waitForTimeout(400);
-    await page.keyboard.press('Enter');
-    let lastLen = -1, stable = 0, text = '';
-    for (let i = 0; i < 80; i++) {
-      await page.waitForTimeout(2000);
-      const blocks = await page.$$(site.answer);
-      if (blocks.length) text = (await blocks[blocks.length - 1].innerText().catch(() => '')) || text;
-      const stopping = await page.$(site.stop).then(x => !!x).catch(() => false);
-      if (text.length === lastLen && !stopping) { if (++stable >= 6) break; } else stable = 0;
+    await page.waitForTimeout(800);
+    const typed = await input.innerText().catch(() => '');
+    if (typed.length < Math.min(200, Math.floor(prompt.length * 0.5))) {
+      emit({ ok: false, reason: 'failed to insert the prompt into the composer', typed_len: typed.length, prompt_len: prompt.length, site: o.site });
+      return;
+    }
+
+    // Submit, then verify. Evidence: a new user message, an emptied composer, or generation started.
+    const submittedEvidence = async () => {
+      if (await page.locator(site.user).count().catch(() => 0) > baseUser) return 'user-count';
+      if (await isGenerating(page, site)) return 'generating';
+      const empty = await input.innerText().then(t => t.trim().length === 0).catch(() => false);
+      if (empty) return 'composer-empty';
+      return null;
+    };
+    let submitted = null;
+    for (const how of ['enter', 'button']) {
+      if (how === 'enter') await page.keyboard.press('Enter');
+      else {
+        const btn = page.locator(site.submit).first();
+        if (await btn.count().catch(() => 0)) await btn.click({ timeout: 5000 }).catch(() => {});
+      }
+      for (let i = 0; i < 12; i++) {
+        await page.waitForTimeout(1000);
+        const ev = await submittedEvidence();
+        if (ev) { submitted = how + ':' + ev; break; }
+      }
+      if (submitted) break;
+    }
+    if (!submitted) {
+      emit({ ok: false, reason: 'submit failed — no sign the prompt was sent (tried Enter and the send button)', site: o.site });
+      return;
+    }
+
+    // Wait for a NEW answer: different from the baseline, generation finished, length stable.
+    const t0 = Date.now();
+    let text = '', lastLen = -1, stable = 0, appeared = false;
+    while (Date.now() - t0 < timeoutMs) {
+      await page.waitForTimeout(2500);
+      const cur = await lastAnswer(page, site);
+      if (cur && cur !== prevAnswer) { appeared = true; text = cur; }
+      const gen = await isGenerating(page, site);
+      if (appeared && !gen && text.length === lastLen) { if (++stable >= 4) break; } else stable = 0;
       lastLen = text.length;
     }
-    if (o.out && o.out !== true) fs.writeFileSync(o.out, text, 'utf-8');
-    emit({ ok: text.length > 0, site: o.site, chars: text.length, out: (o.out && o.out !== true) ? o.out : null, answer_preview: text.slice(0, 400) });
+
+    if (o.out && o.out !== true && text) fs.writeFileSync(o.out, text, 'utf-8');
+    // ok is true only for a NEW answer. Never report the previous answer as a fresh one.
+    emit({
+      ok: appeared && text.length > 0,
+      new_answer: appeared,
+      site: o.site,
+      submitted_by: submitted,
+      chars: text.length,
+      elapsed_sec: Math.round((Date.now() - t0) / 1000),
+      out: (o.out && o.out !== true) ? o.out : null,
+      answer_preview: text.slice(0, 400),
+      ...(appeared ? {} : { reason: 'submitted, but no new answer within the timeout — raise --timeout or check the browser' }),
+    });
   });
 }
 

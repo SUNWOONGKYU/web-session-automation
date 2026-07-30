@@ -60,9 +60,15 @@ claude.ai artifact buttons matched by `aria-label`; with `--kakao`, save buttons
 
 ## 3. chat (ChatGPT / Gemini)
 ```
-node "<SKILL_ROOT>/session.js" chat --site chatgpt|gemini --prompt-file "<file>" [--out "<file>"]
+node "<SKILL_ROOT>/session.js" chat --site chatgpt|gemini --prompt-file "<file>" [--url "<conversation URL>"] [--out "<file>"] [--timeout <seconds>]
 ```
 Pass the prompt as a file (avoids escaping / early submit). Waits for a stable answer. If not logged in, returns `blocked: login required` → log in once in the browser.
+
+- `--url` targets an **existing conversation** (e.g. `https://chatgpt.com/c/<id>`). If that conversation is not reachable — wrong account, deleted — the verb returns `blocked` instead of posting into a different or brand-new chat.
+- **The submit is verified.** The inserted text is checked, then Enter, then the send button as a fallback. With no evidence of a send (new user message / emptied composer / generation started) you get `ok:false, reason:'submit failed …'`.
+- **Only a new answer counts.** The last answer is snapshotted before sending; `ok:true` requires the collected text to differ from that snapshot. Previously a failed send would return the *previous* answer as if it were fresh.
+- Do not baseline on message counts — ChatGPT virtualises the DOM and the rendered count is not monotonic. Also note ChatGPT reuses one submit button whose `data-testid` toggles `send-button` ↔ `stop-button`, so matching only `[data-testid="send-button"]` never finds it.
+- `status` reports `logins[site] === null` when no tab for that site is open (state unknown); `true` means a sign-in button was actually absent from the page, not merely that the URL looked fine.
 
 ## 4. facebook (own profile: draft / schedule / read stats)
 ```
