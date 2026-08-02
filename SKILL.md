@@ -73,12 +73,15 @@ Pass the prompt as a file (avoids escaping / early submit). Waits for a stable a
 ## 4. facebook (own profile: draft / schedule / read stats)
 ```
 node "<SKILL_ROOT>/session.js" facebook status
+node "<SKILL_ROOT>/session.js" facebook latest   --profile "<profile URL>" [--count 3] [--insights] [--shot-dir "<dir>"]
 node "<SKILL_ROOT>/session.js" facebook stats    --url "<post URL>" [--shot-dir "<dir>"]
 node "<SKILL_ROOT>/session.js" facebook insights --url "<content/insights URL>" [--shot-dir "<dir>"]
 node "<SKILL_ROOT>/session.js" facebook draft    --text-file "<body.txt>" [--image "<img>"] [--shot-dir "<dir>"]
 node "<SKILL_ROOT>/session.js" facebook schedule --text-file "<body.txt>" [--image "<img>"] --date "Jul 23, 2026" --time "11:00 AM"
 ```
-Read modes (`status`/`stats`/`insights`) only look; write modes (`draft`/`schedule`) never publish immediately — **`Post` is never clicked**, only `Save` or `Schedule for later` → `Schedule`. `schedule` re-reads the date/time fields and **aborts before committing** if they didn't set cleanly. Everything lands in Content Library → Drafts / Scheduled; screenshots (`fb_staged.png`, `fb_draft_done.png`, `fb_schedule_pre.png`, …) go to `--shot-dir`. Selectors assume the English UI. **Automating your account is at your own risk under Meta's terms — use it on your own profile, at human pace.**
+`latest` answers the question `insights` cannot: **where do I get a `content/insights` URL?** It opens the profile and clicks "See insights and ads" on the most recent posts, returning one `insightsUrl` per post (add `--insights` to scrape the metrics in the same pass). It **skips the pinned post** — the "Other posts" divider's document Y is measured and buttons above it are excluded, so `items[0]` is genuinely the newest post (`items[].pinnedSkipped` reports how many were skipped). Because clicking navigates away, the profile is reloaded once per post: expect ~1 minute per post, which is normal, not a hang. `ok` is true only when **every** requested post was collected — a partial run reports `ok:false` with `partial:true`, and `items[].ok` marks the usable ones. Posts are identified by `snippet` (body text), since Facebook obfuscates timestamps in the profile DOM.
+
+Read modes (`status`/`latest`/`stats`/`insights`) only look; write modes (`draft`/`schedule`) never publish immediately — **`Post` is never clicked**, only `Save` or `Schedule for later` → `Schedule`. `schedule` re-reads the date/time fields and **aborts before committing** if they didn't set cleanly. Everything lands in Content Library → Drafts / Scheduled; screenshots (`fb_staged.png`, `fb_draft_done.png`, `fb_schedule_pre.png`, …) go to `--shot-dir`. Selectors assume the English UI. **Automating your account is at your own risk under Meta's terms — use it on your own profile, at human pace.**
 
 ## Adding sites
 Add `{url, input, answer, stop}` selectors to the `SITES` map in `session.js` to support more chat targets. Upload/download depend on the target page's file input / download-button pattern (locale-specific selectors may need adjusting).
