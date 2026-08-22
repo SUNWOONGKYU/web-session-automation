@@ -1,9 +1,9 @@
 ---
 name: web-session-automation
-description: "Attach over CDP to one dedicated automation Chrome (your own profile + remote-debugging port) and reuse its logged-in sessions to upload files, download artifacts, chat (post & read), upload videos to YouTube Studio, and draft/schedule/measure Facebook posts. One engine, different verbs. For any other site or task, the agent verb drives the same browser from a plain-English goal using your existing claude CLI login (still no API key) — download/upload/chat retry through it automatically when their fixed script fails. Use when asked to upload a file to a web chat, upload a video to YouTube, download claude.ai results, ask ChatGPT/Gemini on the web, draft or schedule a Facebook post, or drive a logged-in browser through a site this tool doesn't have a dedicated verb for. (Local browser automation. Six verbs are deterministic, no LLM, no API keys; the agent verb uses your claude subscription session, still no API key.)"
+description: "Attach over CDP to one dedicated automation Chrome (your own profile + remote-debugging port) and reuse its logged-in sessions to upload files, download artifacts, chat (post & read), upload videos to YouTube Studio, and draft/schedule/measure Facebook posts. One engine, different verbs. For any other site or task, the agent verb drives the same browser from a plain-English goal using your existing claude CLI login (still no API key) — download/upload/chat retry through it automatically when their fixed script fails. Use when asked to upload a file to a web chat, upload a video to YouTube, download claude.ai results, ask ChatGPT/Gemini on the web, draft or schedule a Facebook post, or drive a logged-in browser through a site this tool doesn't have a dedicated verb for. Korean name: 웹세션 자동화 (also matches '웹세션 자동화 스킬', '웹세션-자동화'). (Local browser automation. Six verbs are deterministic, no LLM, no API keys; the agent verb uses your claude subscription session, still no API key.)"
 ---
 
-# Web session automation
+# Web session automation (웹세션 자동화)
 
 Attach to **one dedicated automation Chrome** over CDP and reuse the logged-in sessions inside it. Uploading, downloading and chatting are the **same technique with a different verb**.
 

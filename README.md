@@ -1,6 +1,6 @@
-# web-session-automation
+# web-session-automation (웹세션 자동화)
 
-> ## 🇰🇷 한국어 소개
+> ## 🇰🇷 한국어 소개 — 웹세션 자동화
 >
 > **내가 로그인해 둔 Chrome 인터넷 창을 AI가 대신 움직여 주는 스킬입니다.**
 >
