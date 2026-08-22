@@ -629,18 +629,16 @@ async function cmdFacebook(o) {
       return emit({ ok, mode: 'stats', url, ...out, engagement, viewsAvailable: out.views != null, raw, loggedIn: raw.loggedIn, checkedAt: new Date().toISOString(), shot: path.join(shotDir, 'fb_stats.png'), note: ok ? (out.views != null ? 'scraped, views included' : 'views not shown (personal profile) → track reactions/comments/shares instead. Check fb_stats.png') : (raw.loggedIn ? 'no metrics found — check fb_stats.png' : 'login required — log in to facebook.com in the automation Chrome') });
     }
 
-    if (mode === 'insights') {
-      const url = (o.url && o.url !== true) ? o.url : null;
-      if (!url) return emit({ ok: false, error: 'facebook insights requires --url <content/insights URL>' });
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+    // Scrape metrics off a post-insights screen. Shared by `insights` and `latest`.
+    const readInsights = async (shotName) => {
       // Wait for the insights content to render (Meta splash → render). Poll up to ~30s for "Views".
       let insReady = false;
       for (let i = 0; i < 30; i++) { await sleep(1000); insReady = await page.evaluate(() => { const t = document.body.innerText || ''; return /(^|\n)Views(\n|$)/.test(t) || /조회수|조회 수/.test(t); }); if (insReady) break; }
       await sleep(1500);
       await page.evaluate(async () => { const sleep = ms => new Promise(r => setTimeout(r, ms)); for (let i = 0; i < 6; i++) { window.scrollBy(0, 900); await sleep(500); } window.scrollTo(0, 0); await sleep(300); });
       await sleep(1500);
-      await shot('insights');
-      const d = await page.evaluate(() => {
+      await shot(shotName);
+      return page.evaluate(() => {
         const lines = (document.body.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
         const idx = t => lines.findIndex(l => l === t);
         const N = s => { if (s == null) return null; const m = String(s).replace(/,/g, '').match(/^([\d.]+)$/); return m ? parseFloat(m[1]) : null; };
@@ -649,19 +647,113 @@ async function cmdFacebook(o) {
         let reactByType = null; const ri = idx('Reaction by type');
         if (ri >= 0) { const nums = []; for (let j = ri + 1; j < lines.length && nums.length < 7; j++) { const v = N(lines[j]); if (v != null) nums.push(v); } if (nums.length >= 2) reactByType = { like: nums[0], love: nums[1], care: nums[2], haha: nums[3], wow: nums[4], sad: nums[5], angry: nums[6] }; }
         const age = {}; for (let i = 0; i < lines.length; i++) { if (/^\d{2}-\d{2}$|^65\+$|^18-24$/.test(lines[i])) { const m = (lines[i + 1] || '').match(/^([\d.]+)%$/); if (m) age[lines[i]] = parseFloat(m[1]); } }
+        // Which post is this? Facebook obfuscates the timestamp text, so identify by body text.
+        const snippet = lines.filter(l => l.length > 10 && !/^Comment as|^Facebook$/.test(l)).slice(0, 2);
         return {
           views: after('Views'), viewers: after('Viewers'),
           reactions: before('Reactions'), clicks: before('Clicks'), comments: before('Comments'), shares: before('Shares'),
           linkClicks: before('Link clicks'), followers: before('Followers'), nonFollowers: before('Non-followers'),
-          reactByType, age, loggedIn: !document.querySelector('input[name="email"],input[type="password"]'),
+          reactByType, age, snippet, loggedIn: !document.querySelector('input[name="email"],input[type="password"]'),
         };
       });
+    };
+
+    // Scroll a profile down to the "Other posts" divider (everything above it is the pinned post).
+    // Returns the divider's document-space Y, or null if it never appeared.
+    const scrollToOtherPosts = async (profileUrl) => {
+      await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await sleep(9000);
+      for (let i = 0; i < 14; i++) {
+        const y = await page.evaluate(() => {
+          const el = [...document.querySelectorAll('span,div,h2')].find(e => (e.textContent || '').trim() === 'Other posts');
+          if (!el) return null;
+          el.scrollIntoView({ block: 'start' });
+          return el.getBoundingClientRect().top + window.scrollY;
+        });
+        if (y != null) { await sleep(3500); return y; }
+        await page.mouse.wheel(0, 1600); await sleep(2200);
+      }
+      return null;
+    };
+
+    // How many insights buttons sit above the "Other posts" divider (i.e. belong to the pinned post).
+    // The divider's position is re-read here rather than passed in: the layout can shift between the
+    // scroll and this call, and a stale Y would over-skip real posts.
+    // If a coordinate cannot be read we fail instead of guessing — falling through with a partial
+    // count would pick the pinned post at exactly the moment the guard matters most.
+    const countPinnedInsightsButtons = async () => {
+      const markerY = await page.evaluate(() => {
+        const el = [...document.querySelectorAll('span,div,h2')].find(e => (e.textContent || '').trim() === 'Other posts');
+        return el ? el.getBoundingClientRect().top + window.scrollY : null;
+      });
+      if (markerY == null) return { ok: false, error: "the 'Other posts' divider (pinned-post boundary) disappeared" };
+      const btns = await page.getByText('See insights and ads', { exact: true }).all();
+      if (btns.length === 0) return { ok: false, error: 'no insights buttons on the page (session expired, still rendering, or layout changed)' };
+      let skip = 0;
+      for (const b of btns) {
+        let y = null;
+        try { y = await b.evaluate(e => e.getBoundingClientRect().top + window.scrollY); }
+        catch (e) { return { ok: false, error: `could not read button coordinates (resolved ${skip} so far) — cannot guarantee the pinned post is skipped: ${String(e).slice(0, 80)}` }; }
+        if (y == null) return { ok: false, error: `button coordinate was null (at index ${skip}) — cannot guarantee the pinned post is skipped` };
+        if (y < markerY) skip++; else break;
+      }
+      return { ok: true, skip, total: btns.length };
+    };
+
+    if (mode === 'insights') {
+      const url = (o.url && o.url !== true) ? o.url : null;
+      if (!url) return emit({ ok: false, error: 'facebook insights requires --url <content/insights URL>' });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+      const d = await readInsights('insights');
       const eng = (d.reactions || 0) + (d.clicks || 0) + (d.comments || 0) + (d.shares || 0);
       const ok = d.loggedIn && d.views != null;
       return emit({ ok, mode: 'insights', url, ...d, engagement: eng, checkedAt: new Date().toISOString(), shot: path.join(shotDir, 'fb_insights.png'), note: ok ? 'insights scraped' : (d.loggedIn ? 'no metrics found — check fb_insights.png (layout may have changed)' : 'login required') });
     }
 
-    if (mode !== 'draft' && mode !== 'schedule') return emit({ ok: false, error: 'facebook mode must be status|stats|insights|draft|schedule', got: mode || '(none)' });
+    // latest — discover the insights URLs of a profile's most recent posts.
+    // `insights` needs a content/insights URL but there was no way to obtain one. This closes that gap.
+    // Facebook obfuscates post timestamps and permalinks in the profile DOM, so instead of scraping we
+    // click "See insights and ads" and read the resulting URL. Clicking navigates away, so the profile
+    // is reopened once per post — slow, but reliable.
+    if (mode === 'latest') {
+      const profile = (o.profile && o.profile !== true) ? o.profile : null;
+      if (!profile) return emit({ ok: false, error: 'facebook latest requires --profile <profile URL>' });
+      const count = Math.max(1, Math.min(10, parseInt(o.count, 10) || 3));
+      const wantIns = !!o.insights;
+      const items = [];
+      for (let n = 0; n < count; n++) {
+        const markerY = await scrollToOtherPosts(profile);
+        if (markerY == null) { items.push({ n, ok: false, error: "could not find the 'Other posts' section (profile layout may have changed)" }); continue; }
+        const pin = await countPinnedInsightsButtons();
+        if (!pin.ok) { items.push({ n, ok: false, error: pin.error }); continue; }
+        const skip = pin.skip;
+        if (skip + n >= pin.total) { items.push({ n, ok: false, pinnedSkipped: skip, error: `not enough posts — ${pin.total - skip} available after skipping the pinned post, asked for #${n + 1}` }); continue; }
+        try {
+          const loc = page.getByText('See insights and ads', { exact: true }).nth(skip + n);
+          await loc.scrollIntoViewIfNeeded({ timeout: 25000 });
+          await sleep(1200);
+          await loc.click({ timeout: 25000 });
+        } catch (e) { items.push({ n, ok: false, pinnedSkipped: skip, error: 'could not open insights (slow render or blocked click): ' + String(e).slice(0, 120) }); continue; }
+        await sleep(4000);
+        const insightsUrl = page.url();
+        if (!/content\/insights/.test(insightsUrl)) { items.push({ n, ok: false, pinnedSkipped: skip, url: insightsUrl, error: 'did not land on an insights screen' }); continue; }
+        if (!wantIns) { items.push({ n, ok: true, pinnedSkipped: skip, insightsUrl }); continue; }
+        const d = await readInsights('insights_' + n);
+        const eng = (d.reactions || 0) + (d.clicks || 0) + (d.comments || 0) + (d.shares || 0);
+        items.push({ n, ok: !!(d.loggedIn && d.views != null), pinnedSkipped: skip, insightsUrl, ...d, engagement: eng });
+      }
+      const okCount = items.filter(i => i.ok).length;
+      // `ok` means every requested post was collected. A partial result is not reported as success —
+      // callers that can use partial data read `partial` and `items[].ok` and decide for themselves.
+      return emit({
+        ok: okCount === count, partial: okCount > 0 && okCount < count,
+        mode: 'latest', profile, requested: count, okCount, withInsights: wantIns,
+        items, checkedAt: new Date().toISOString(),
+        note: okCount === 0 ? 'nothing collected — check fb_insights_*.png (login / layout)' : (okCount < count ? `partial — ${okCount} of ${count} collected (ok=false); use items[].ok to pick the successful ones` : 'collected'),
+      });
+    }
+
+    if (mode !== 'draft' && mode !== 'schedule') return emit({ ok: false, error: 'facebook mode must be status|latest|stats|insights|draft|schedule', got: mode || '(none)' });
 
     const textFile = o['text-file'];
     if (!textFile || textFile === true) return emit({ ok: false, error: '--text-file <path> required' });
