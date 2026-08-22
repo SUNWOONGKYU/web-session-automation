@@ -10,6 +10,11 @@
 //   youtube  --file <mp4> --title-file <path>|--title <s> [--desc-file <path>] [--visibility public|unlisted|private] [--publish] [--shot-dir <dir>]
 //   chat     --site <chatgpt|gemini> --prompt-file <path> [--url <conversation URL>] [--out <file>] [--timeout <seconds>]
 //   facebook status | stats --url <post> | insights --url <insights> | draft ... | schedule ...
+//   agent    --goal "<plain-English goal>" [--url <start URL>] [--max-steps N] [--run-dir <dir>]
+//            General-purpose LLM decision loop (your `claude` subscription session, no API key).
+//            download/upload/chat retry through this automatically when their fixed path fails
+//            structurally. Human-only actions (login/2FA, payment, deletion, e-signature,
+//            CAPTCHA) are refused both by the prompt and, independently, in code.
 //
 // Verified know-how:
 //   · Over connectOverCDP, CDP Browser.setDownloadBehavior conflicts with Playwright saveAs ('canceled').
@@ -101,7 +106,25 @@ async function lastAnswer(page, site) {
   return (await page.locator(site.answer).nth(n - 1).innerText().catch(() => '')) || '';
 }
 
-async function getCtx(pw) { const b = await pw.chromium.connectOverCDP(CDP, { timeout: 120000 }); return { b, ctx: b.contexts()[0] }; }
+// connectOverCDP can time out even when Chrome is fine — it's just momentarily busy (many tabs,
+// heavy workers). A single long-timeout attempt used to be mistaken for "Chrome is dead" and led
+// to restarting the browser (losing every logged-in tab) when simply retrying would have worked.
+async function getCtx(pw, tries) {
+  const attempts = tries || 4;
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const b = await pw.chromium.connectOverCDP(CDP, { timeout: 20000 });
+      const ctx = b.contexts()[0];
+      if (!ctx) throw new Error('No browser context available');
+      return { b, ctx };
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts) await new Promise(r => setTimeout(r, 3000 * i));
+    }
+  }
+  throw new Error(`CDP connect failed after ${attempts} attempts: ${String(lastErr && lastErr.message || lastErr).slice(0, 200)}`);
+}
 function findTab(ctx, re) { return ctx.pages().find(p => { try { return re.test(p.url()); } catch (e) { return false; } }); }
 async function withBrowser(fn) {
   const pw = loadPlaywright();
@@ -162,15 +185,15 @@ async function cmdDownload(o) {
   if (o.artifacts === undefined || o.artifacts === true) o.artifacts = 'all';
   if (o.text === undefined || o.text === true) o.text = 'none';
   fs.mkdirSync(OUT, { recursive: true });
-  await withBrowser(async (ctx) => {
+  return withBrowser(async (ctx) => {
     // ── KakaoTalk Business chat: download files/videos via each message's save button (a.btn_save) ──
     if (o.kakao) {
       let kp = o.url && o.url !== true ? findTab(ctx, new RegExp(String(o.url).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))) : findTab(ctx, /\/chats?\//);
       if (!kp && o.url && o.url !== true) { kp = await ctx.newPage(); await kp.goto(o.url, { waitUntil: 'domcontentloaded' }); await kp.waitForTimeout(4000); }
-      if (!kp) { emit({ ok: false, error: 'KakaoTalk chat tab not found. Pass --url <chat URL> or open the chat in the automation Chrome.' }); return; }
+      if (!kp) return { ok: false, error: 'KakaoTalk chat tab not found. Pass --url <chat URL> or open the chat in the automation Chrome.' };
       await kp.bringToFront(); await kp.waitForTimeout(1500);
       const kb = await kp.evaluate(() => document.body.innerText || '');
-      if (/추가인증|탈퇴/.test(kb)) { emit({ ok: false, blocked: true, reason: (kb.match(/추가인증|탈퇴/) || [])[0], hint: 'KakaoTalk admin re-auth required — handle in the browser yourself' }); return; }
+      if (/추가인증|탈퇴/.test(kb)) return { ok: false, blocked: true, reason: (kb.match(/추가인증|탈퇴/) || [])[0], hint: 'KakaoTalk admin re-auth required — handle in the browser yourself' };
       const res = { out: OUT, downloaded: [], failed: [], verify: {} };
       const dlP = [];
       kp.on('download', d => dlP.push(d.saveAs(path.join(OUT, d.suggestedFilename())).then(() => ({ file: d.suggestedFilename(), ok: true })).catch(e => ({ file: d.suggestedFilename(), ok: false, err: String(e).slice(0, 120) }))));
@@ -189,12 +212,11 @@ async function cmdDownload(o) {
       for (const f of listK().filter(f => !beforeK.has(f)).sort()) res.downloaded.push({ file: f, bytes: fs.statSync(path.join(OUT, f)).size });
       res.verify = { save_buttons: saves.length, clicked, new_files: res.downloaded.length, ok: res.downloaded.length > 0 && res.downloaded.every(d => d.bytes > 0) };
       fs.writeFileSync(path.join(OUT, '_result.json'), JSON.stringify(res, null, 2), 'utf-8');
-      emit(res);
-      return;
+      return res;
     }
     let page = o.url && o.url !== true ? findTab(ctx, new RegExp(String(o.url).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))) : findTab(ctx, /\/chat\//);
     if (!page) page = ctx.pages()[0];
-    if (!page) { emit({ ok: false, error: 'No claude.ai /chat/ tab found. Open a claude.ai session in the automation Chrome.' }); return; }
+    if (!page) return { ok: false, error: 'No claude.ai /chat/ tab found. Open a claude.ai session in the automation Chrome.' };
     await page.bringToFront();
     for (let i = 0; i < 8; i++) { await page.mouse.wheel(0, 5000); await page.waitForTimeout(250); }
     await page.waitForTimeout(600);
@@ -242,7 +264,7 @@ async function cmdDownload(o) {
     if (o.text !== 'none') ok = ok && res.text_saved.length > 0;
     res.verify = { clicked, new_files: res.downloaded.length, zero_byte: zero.length, text_files: res.text_saved.length, clicked_eq_files: clicked === res.downloaded.length, ok };
     fs.writeFileSync(path.join(OUT, '_result.json'), JSON.stringify(res, null, 2), 'utf-8');
-    emit(res);
+    return res;
   });
 }
 
@@ -250,16 +272,15 @@ async function cmdDownload(o) {
 async function cmdUpload(o) {
   if (!o.file || o.file === true) throw new Error('--file <path> required (file to upload)');
   if (!fs.existsSync(o.file)) throw new Error('--file path does not exist: ' + o.file);
-  await withBrowser(async (ctx) => {
+  return withBrowser(async (ctx) => {
     let page = o.url && o.url !== true ? findTab(ctx, new RegExp(String(o.url).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))) : findTab(ctx, /\/chats?\//);
     if (!page && o.url && o.url !== true) { page = await ctx.newPage(); await page.goto(o.url, { waitUntil: 'domcontentloaded' }); await page.waitForTimeout(4000); }
-    if (!page) { emit({ ok: false, error: 'Target chat tab not found. Pass --url <chat URL> or open the chat in the automation Chrome.' }); return; }
+    if (!page) return { ok: false, error: 'Target chat tab not found. Pass --url <chat URL> or open the chat in the automation Chrome.' };
     await page.bringToFront(); await page.waitForTimeout(800);
     const pre = await page.evaluate(() => document.body.innerText || '');
     // --kakao: detect KakaoTalk Business blockers (admin re-auth expired / recipient withdrew). These need manual action by you.
     if (o.kakao && /추가인증|탈퇴|보낼 수 없습니다/.test(pre)) {
-      emit({ ok: false, blocked: true, reason: (pre.match(/추가인증|탈퇴|보낼 수 없습니다/) || [])[0], hint: 'KakaoTalk admin re-auth / recipient withdrawn — handle in the browser yourself' });
-      return;
+      return { ok: false, blocked: true, reason: (pre.match(/추가인증|탈퇴|보낼 수 없습니다/) || [])[0], hint: 'KakaoTalk admin re-auth / recipient withdrawn — handle in the browser yourself' };
     }
     const baseCancel = (pre.match(/취소/g) || []).length;          // upload-in-progress 'cancel' baseline (Kakao)
     const errRe = /업로드 실패|전송 실패|오류가 발생|failed|error/i;
@@ -269,8 +290,8 @@ async function cmdUpload(o) {
     for (let i = 0; i < 24; i++) {
       await page.waitForTimeout(3000);
       const t = await page.evaluate(() => document.body.innerText || '');
-      if (/탈퇴|보낼 수 없습니다/.test(t)) { emit({ ok: false, blocked: true, reason: 'cannot send (withdrawn/blocked)' }); return; }
-      if (!pre.match(errRe) && errRe.test(t)) { emit({ ok: false, error: 'upload/send error detected', detail: (t.match(errRe) || [])[0] }); return; }
+      if (/탈퇴|보낼 수 없습니다/.test(t)) return { ok: false, blocked: true, reason: 'cannot send (withdrawn/blocked)' };
+      if (!pre.match(errRe) && errRe.test(t)) return { ok: false, error: 'upload/send error detected', detail: (t.match(errRe) || [])[0] };
       const cur = (t.match(/취소/g) || []).length;
       if (o.kakao) {
         if (cur > baseCancel) sawProgress = true;
@@ -280,7 +301,7 @@ async function cmdUpload(o) {
     }
     const shot = path.join(os.tmpdir(), 'websession_upload.png');
     await page.screenshot({ path: shot });
-    emit({ ok: done, file: path.basename(o.file), uploaded, verify_hint: 'confirm delivery via the screenshot / received message', screenshot: shot });
+    return { ok: done, file: path.basename(o.file), uploaded, verify_hint: 'confirm delivery via the screenshot / received message', screenshot: shot };
   });
 }
 
@@ -421,7 +442,7 @@ async function cmdChat(o) {
   const prompt = (o['prompt-file'] && o['prompt-file'] !== true) ? fs.readFileSync(o['prompt-file'], 'utf-8') : (o.prompt && o.prompt !== true ? o.prompt : '');
   if (!prompt) throw new Error('--prompt-file <path> or --prompt <text> required');
   const timeoutMs = (parseInt(o.timeout, 10) || 420) * 1000;
-  await withBrowser(async (ctx) => {
+  return withBrowser(async (ctx) => {
     // Target tab: --url picks a specific conversation, otherwise any tab on the site, otherwise open one.
     let page = null;
     if (o.url && o.url !== true) {
@@ -435,10 +456,9 @@ async function cmdChat(o) {
 
     // Login: the URL alone is not enough (a signed-out visit redirects to the root), so
     // also look for a sign-in affordance on the page.
-    if (/login|accounts|auth|signin|ServiceLogin/i.test(page.url())) { emit({ ok: false, blocked: true, reason: 'login required', site: o.site, url: page.url() }); return; }
+    if (/login|accounts|auth|signin|ServiceLogin/i.test(page.url())) return { ok: false, blocked: true, reason: 'login required', site: o.site, url: page.url() };
     if (site.loggedOut && await page.locator(site.loggedOut).count().catch(() => 0) > 0) {
-      emit({ ok: false, blocked: true, reason: 'login required — sign in to this site once in the automation Chrome, then retry (this tool never types credentials)', site: o.site, url: page.url() });
-      return;
+      return { ok: false, blocked: true, reason: 'login required — sign in to this site once in the automation Chrome, then retry (this tool never types credentials)', site: o.site, url: page.url() };
     }
     // If --url was given but we did not land on it, stop. Never silently write the prompt
     // into a different or brand-new conversation.
@@ -453,12 +473,11 @@ async function cmdChat(o) {
                  + (await page.locator(site.answer).count().catch(() => 0));
       const needHistory = /\/c\//.test(String(o.url));   // an existing-conversation URL was given
       if (!urlOk || (needHistory && msgs === 0)) {
-        emit({
+        return {
           ok: false, blocked: true,
           reason: 'requested conversation is not reachable (different account, deleted, or empty); refused to post into another conversation',
           want: o.url, got: page.url(), messages_found: msgs,
-        });
-        return;
+        };
       }
     }
 
@@ -477,8 +496,7 @@ async function cmdChat(o) {
     await page.waitForTimeout(800);
     const typed = await input.innerText().catch(() => '');
     if (typed.length < Math.min(200, Math.floor(prompt.length * 0.5))) {
-      emit({ ok: false, reason: 'failed to insert the prompt into the composer', typed_len: typed.length, prompt_len: prompt.length, site: o.site });
-      return;
+      return { ok: false, reason: 'failed to insert the prompt into the composer', typed_len: typed.length, prompt_len: prompt.length, site: o.site };
     }
 
     // Submit, then verify. Evidence: a new user message, an emptied composer, or generation started.
@@ -504,8 +522,7 @@ async function cmdChat(o) {
       if (submitted) break;
     }
     if (!submitted) {
-      emit({ ok: false, reason: 'submit failed — no sign the prompt was sent (tried Enter and the send button)', site: o.site });
-      return;
+      return { ok: false, reason: 'submit failed — no sign the prompt was sent (tried Enter and the send button)', site: o.site };
     }
 
     // Wait for a NEW answer: different from the baseline, generation finished, length stable.
@@ -522,7 +539,7 @@ async function cmdChat(o) {
 
     if (o.out && o.out !== true && text) fs.writeFileSync(o.out, text, 'utf-8');
     // ok is true only for a NEW answer. Never report the previous answer as a fresh one.
-    emit({
+    return {
       ok: appeared && text.length > 0,
       new_answer: appeared,
       site: o.site,
@@ -532,7 +549,7 @@ async function cmdChat(o) {
       out: (o.out && o.out !== true) ? o.out : null,
       answer_preview: text.slice(0, 400),
       ...(appeared ? {} : { reason: 'submitted, but no new answer within the timeout — raise --timeout or check the browser' }),
-    });
+    };
   });
 }
 
@@ -704,17 +721,307 @@ async function cmdFacebook(o) {
   });
 }
 
+// ───────────────────────── agent (general-purpose LLM decision loop) ─────────────────────────
+// The verbs above are "fixed" — deterministic, hand-built for one site's DOM, fast, free. The
+// `agent` verb is the opposite: it looks at the screen and decides the next action itself, one
+// step at a time, so it can handle a site it has never seen before from a plain-English goal.
+// It never uses an API key — it shells out to the locally installed `claude` CLI (your existing
+// subscription session), so a step costs whatever your normal Claude Code usage costs, nothing more.
+//
+// Five categories of action are for a human only — logging in, identity verification / signing a
+// certificate, CAPTCHAs, payments, and any irreversible final confirmation (submit an application,
+// finalize a purchase, delete an account). The prompt tells the model to stop itself, and the code
+// enforces it a second time regardless of what the model decides (SENSITIVE_RE below, plus a hard
+// refusal on any `input[type=password]`).
+
+const SENSITIVE_RE = /password|비밀번호|pay|checkout|purchase|구매\s*확정|결제|송금|wire\s*transfer|계좌\s*이체|submit application|신청\s*완료|final(?:ize)?\s*submit|제출하기|sign(?:ature)?|서명|verify\s*identity|본인\s*인증|공동인증서|captcha|캡차|otp|delete\s*account|영구\s*삭제|탈퇴하기|close\s*account|해지하기/i;
+
+function resolveClaudeExe() {
+  if (process.env.CLAUDE_EXE_PATH && fs.existsSync(process.env.CLAUDE_EXE_PATH)) return { exe: process.env.CLAUDE_EXE_PATH, shell: false };
+  try {
+    const where = require('child_process').execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { encoding: 'utf-8' });
+    const candidates = where.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const cmdPath = candidates.find(s => /\.cmd$/i.test(s));
+    if (cmdPath && fs.existsSync(cmdPath)) {
+      // On Windows the npm shim is a .cmd batch file; going through it via a shell can mangle a
+      // multi-line --json-schema argument. Resolve the real .exe it wraps and call that directly.
+      const body = fs.readFileSync(cmdPath, 'utf-8');
+      const m = body.match(/"%dp0%([^"]+\.exe)"/i);
+      if (m) { const exe = path.join(path.dirname(cmdPath), m[1]); if (fs.existsSync(exe)) return { exe, shell: false }; }
+    }
+    if (candidates[0]) return { exe: candidates[0], shell: process.platform === 'win32' };
+  } catch (e) {}
+  return { exe: 'claude', shell: process.platform === 'win32' };
+}
+
+// One decision call — prompt via stdin, output forced to JSON via --json-schema.
+function decide(dir, schema, promptText) {
+  const { exe, shell } = resolveClaudeExe();
+  const schemaStr = JSON.stringify(schema); // single line — safe even through a shell fallback
+  const cliArgs = ['-p', '--allowedTools', 'Read', '--add-dir', dir, '--output-format', 'json', '--json-schema', schemaStr];
+  const r = require('child_process').spawnSync(exe, cliArgs, { encoding: 'utf-8', input: promptText, maxBuffer: 20 * 1024 * 1024, shell });
+  if (r.error) throw new Error('failed to run claude: ' + r.error.message);
+  if (r.status !== 0) throw new Error(`claude exited ${r.status}: ` + String(r.stderr || '').slice(0, 300));
+  let outer;
+  try { outer = JSON.parse(r.stdout); } catch (e) { throw new Error('failed to parse claude output: ' + String(r.stdout).slice(0, 300)); }
+  if (outer.is_error) throw new Error('claude error: ' + String(outer.result || '').slice(0, 300));
+  return outer.structured_output || JSON.parse(outer.result);
+}
+
+const AGENT_SCHEMA = {
+  type: 'object',
+  properties: {
+    reasoning: { type: 'string', description: 'one line: why this action' },
+    action: { type: 'string', enum: ['click', 'type', 'select', 'attach_file', 'scroll', 'navigate', 'extract', 'done', 'blocked'] },
+    target_index: { type: ['integer', 'null'], description: 'the i value from elements.json (target for click/type/select/attach_file); null otherwise' },
+    value: { type: ['string', 'null'], description: 'type: text to type. select: one of the option texts. navigate: a URL. scroll: up|down. extract/done/blocked: the result or reason' },
+  },
+  required: ['reasoning', 'action', 'target_index', 'value'],
+};
+
+// Tags every candidate element with data-agent-i so 'select' and 'attach_file' can re-locate the
+// exact node later — coordinate clicks can't drive a native <select> popup or a file chooser.
+async function collectElements(page) {
+  return page.evaluate(() => {
+    const sel = 'button, a, input, textarea, select, [role="button"], [contenteditable="true"]';
+    return Array.from(document.querySelectorAll(sel)).slice(0, 150).map((el, i) => {
+      el.setAttribute('data-agent-i', String(i));
+      const r = el.getBoundingClientRect();
+      const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.value || '').trim().slice(0, 60);
+      const tag = el.tagName.toLowerCase();
+      const options = tag === 'select' ? Array.from(el.options).slice(0, 30).map(o => o.text.trim().slice(0, 40)) : null;
+      return { i, tag, type: el.getAttribute('type') || null, text, options, x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+    }).filter(e => e.w > 0 && e.h > 0 && e.y >= -50 && e.y < 20000);
+  });
+}
+
+function buildPrompt(goal, history, shotPath, elPath, attachFile) {
+  const histTxt = history.length
+    ? history.map(h => `- [${h.step}] ${h.action}(i=${h.target_index}) -> ${h.reasoning}${h.result ? ' | result: ' + h.result : ''}`).join('\n')
+    : '(none — first step)';
+  return [
+    `Goal: ${goal}`, ``,
+    `Steps so far:`, histTxt, ``,
+    `Current screenshot: ${shotPath}`,
+    `Current interactive elements (JSON, i = index for click/type/select/attach_file): ${elPath}`, ``,
+    `Read both files, then output exactly one next action per the JSON schema.`, ``,
+    `Rules (never violate):`,
+    `- If you hit anything a human must do themselves — login, password entry, identity`,
+    `  verification / e-signature certificates, CAPTCHA, payment, wire transfer, a final`,
+    `  "confirm purchase / submit application / delete account" step — do not click or type it.`,
+    `  Stop with action:"blocked" and explain why in value.`,
+    `- Never click a payment/delete/confirmation button unrelated to the goal.`,
+    `- For a "select" (dropdown) element, don't click/type it — use action:"select" with value set`,
+    `  to one of its options' text verbatim.`,
+    attachFile ? `- A file is already staged (${attachFile}). When you find the file-attach input,` : null,
+    attachFile ? `  use action:"attach_file" — the real path is supplied by the system, value can be empty.` : null,
+    `- If the goal is already achieved, use action:"done"; if you found the requested info, use`,
+    `  action:"extract" with the result in value.`,
+    `- If the goal is open-ended ("find the best/most/all of X"), you may run out of steps —`,
+    `  when you're reasonably confident, extract/done early rather than exhausting the budget.`,
+    `- If an action doesn't change the screen when repeated, try something else or stop as blocked.`,
+  ].filter(Boolean).join('\n');
+}
+
+// ── graduation tracking: when `agent` keeps succeeding on the same host, it's worth writing a
+// dedicated fixed verb for it. This only counts and recommends — it never rewrites session.js
+// itself, since that's still a code change a human should review. ──
+const GRAD_LOG_PATH = path.join(__dirname, 'graduation_log.json');
+const GRADUATION_THRESHOLD = 3;
+function recordAgentRun(host, goal, ok) {
+  if (!host) return null;
+  let log = {};
+  try { log = JSON.parse(fs.readFileSync(GRAD_LOG_PATH, 'utf-8')); } catch (e) {}
+  if (!log[host]) log[host] = [];
+  log[host].push({ goal: String(goal || '').slice(0, 80), ok: !!ok, at: Date.now() });
+  if (log[host].length > 50) log[host] = log[host].slice(-50);
+  fs.writeFileSync(GRAD_LOG_PATH, JSON.stringify(log, null, 1), 'utf-8');
+  const successCount = log[host].filter(e => e.ok).length;
+  const candidate = successCount >= GRADUATION_THRESHOLD;
+  return {
+    host, success_count: successCount, total_runs: log[host].length, graduation_candidate: candidate,
+    note: candidate
+      ? `agent has succeeded ${successCount}x on this host — consider writing a dedicated fixed verb for it`
+      : `${host}: ${successCount}/${GRADUATION_THRESHOLD} successes (${GRADUATION_THRESHOLD - successCount} more to become a graduation candidate)`,
+  };
+}
+
+async function cmdAgent(o) {
+  const goal = (o.goal && o.goal !== true) ? String(o.goal) : null;
+  if (!goal) throw new Error('--goal "<plain-English goal>" required');
+  const maxSteps = o['max-steps'] && o['max-steps'] !== true ? parseInt(o['max-steps'], 10) : 25;
+  const runDir = (o['run-dir'] && o['run-dir'] !== true) ? o['run-dir'] : path.join(os.tmpdir(), 'websession_agent_' + Date.now());
+  fs.mkdirSync(runDir, { recursive: true });
+  const attachFile = (o['attach-file'] && o['attach-file'] !== true) ? o['attach-file'] : null;
+  if (attachFile && !fs.existsSync(attachFile)) throw new Error('--attach-file path does not exist: ' + attachFile);
+
+  const pw = loadPlaywright();
+  const { b, ctx } = await getCtx(pw);
+  const history = [];
+  let stopped = null, stopValue = null;
+  try {
+    let page = null;
+    let openedNewTab = false;
+    if (o.url && o.url !== true) {
+      page = findTab(ctx, new RegExp(String(o.url).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      if (!page) { page = await ctx.newPage(); openedNewTab = true; await page.goto(o.url, { waitUntil: 'domcontentloaded' }); await page.waitForTimeout(3000); }
+    } else {
+      page = ctx.pages()[ctx.pages().length - 1];
+      if (!page) throw new Error('no open tab and no --url given');
+    }
+    await page.bringToFront();
+
+    const downloads = [];
+    const dlPromises = [];
+    page.on('download', d => {
+      dlPromises.push(
+        d.saveAs(path.join(runDir, d.suggestedFilename()))
+          .then(() => downloads.push({ file: d.suggestedFilename(), ok: true }))
+          .catch(e => downloads.push({ file: d.suggestedFilename(), ok: false, err: String(e).slice(0, 120) }))
+      );
+    });
+
+    for (let step = 1; step <= maxSteps; step++) {
+      await page.waitForTimeout(600);
+      const shotPath = path.join(runDir, `step${step}.png`);
+      const elPath = path.join(runDir, `step${step}_elements.json`);
+      await page.screenshot({ path: shotPath });
+      const elements = await collectElements(page);
+      fs.writeFileSync(elPath, JSON.stringify(elements, null, 1), 'utf-8');
+
+      const prompt = buildPrompt(goal, history, shotPath, elPath, attachFile);
+      let decision;
+      try { decision = decide(runDir, AGENT_SCHEMA, prompt); }
+      catch (e) { stopped = 'error'; stopValue = String(e.message || e).slice(0, 300); break; }
+
+      // Hard guard, independent of what the model decided: elements are matched by their `i`
+      // property, NOT array position (the array is filtered, so positions shift).
+      const target = (decision.target_index !== null && decision.target_index !== undefined) ? elements.find(e => e.i === decision.target_index) : null;
+      if (decision.action === 'click' || decision.action === 'type' || decision.action === 'select') {
+        const sensitiveText = target && SENSITIVE_RE.test(target.text || '');
+        const isPassword = target && target.type === 'password';
+        if (!target || sensitiveText || isPassword) {
+          history.push({ step, action: 'blocked', target_index: decision.target_index, reasoning: 'sensitive_action_guard', result: isPassword ? 'password field — never entered on your behalf' : (sensitiveText ? `looks like a human-only action ("${target.text}")` : 'target element not found') });
+          stopped = 'blocked_sensitive';
+          stopValue = isPassword ? 'password field detected — credentials are never entered automatically' : (sensitiveText ? `human-only action detected: "${target.text}"` : "the model's chosen target no longer exists on screen");
+          break;
+        }
+      }
+      if (decision.action === 'attach_file' && !target) {
+        history.push({ step, action: 'blocked', target_index: decision.target_index, reasoning: 'target_not_found', result: 'target element not found' });
+        stopped = 'blocked_sensitive'; stopValue = "the model's chosen file-attach target no longer exists on screen";
+        break;
+      }
+
+      let stepResult = '';
+      try {
+        if (decision.action === 'click') {
+          await page.mouse.click(target.x + target.w / 2, target.y + target.h / 2);
+          stepResult = `click: ${target.text}`;
+        } else if (decision.action === 'type') {
+          await page.mouse.click(target.x + target.w / 2, target.y + target.h / 2);
+          await page.waitForTimeout(200);
+          await page.evaluate((t) => document.execCommand('insertText', false, t), decision.value || '');
+          stepResult = `type: ${(decision.value || '').slice(0, 40)}`;
+        } else if (decision.action === 'attach_file') {
+          if (!attachFile) throw new Error('attach_file action but no --attach-file was given');
+          await page.locator(`[data-agent-i="${target.i}"]`).setInputFiles(attachFile);
+          stepResult = `attach_file: ${path.basename(attachFile)}`;
+        } else if (decision.action === 'select') {
+          const loc = page.locator(`[data-agent-i="${target.i}"]`);
+          try { await loc.selectOption({ label: decision.value || '' }); }
+          catch (e) { await loc.selectOption(decision.value || ''); }
+          stepResult = `select: ${decision.value}`;
+        } else if (decision.action === 'scroll') {
+          await page.mouse.wheel(0, decision.value === 'up' ? -800 : 800);
+          stepResult = 'scroll: ' + (decision.value || 'down');
+        } else if (decision.action === 'navigate') {
+          await page.goto(decision.value, { waitUntil: 'domcontentloaded' });
+          stepResult = 'navigate: ' + decision.value;
+        } else if (decision.action === 'extract') {
+          stopped = 'extracted'; stopValue = decision.value;
+        } else if (decision.action === 'done') {
+          stopped = 'done'; stopValue = decision.value;
+        } else if (decision.action === 'blocked') {
+          stopped = 'blocked_by_model'; stopValue = decision.value;
+        }
+      } catch (e) { stepResult = 'execution error: ' + String(e.message || e).slice(0, 150); }
+
+      history.push({ step, action: decision.action, target_index: decision.target_index, reasoning: decision.reasoning, result: stepResult || null });
+      if (stopped) break;
+    }
+    if (!stopped) { stopped = 'max_steps'; stopValue = `hit the ${maxSteps}-step limit — goal not completed`; }
+
+    await Promise.all(dlPromises).catch(() => {});
+    const finalShot = path.join(runDir, 'final.png');
+    try { await page.screenshot({ path: finalShot }); } catch (e) {}
+    let host = null; try { host = new URL(page.url()).host; } catch (e) {}
+    // Close a tab we opened ourselves — leaving it open across repeated runs is what made CDP
+    // connections flaky in practice (Chrome gets busy with dozens of accumulated tabs).
+    if (openedNewTab) { try { await page.close(); } catch (e) {} }
+    const ok = stopped === 'done' || stopped === 'extracted' || (stopped === 'max_steps' && downloads.some(d => d.ok));
+    const graduation = recordAgentRun(host, goal, ok);
+    const res = { ok, stopped_reason: stopped, result: stopValue, steps_taken: history.length, max_steps: maxSteps, run_dir: runDir, final_screenshot: finalShot, downloads, history, graduation };
+    fs.writeFileSync(path.join(runDir, '_agent_log.json'), JSON.stringify(res, null, 2), 'utf-8');
+    return res;
+  } finally { try { await b.close(); } catch (e) {} }
+}
+
+// ───────────────────────── fixed → agent automatic fallback ─────────────────────────
+// "fixed" = the deterministic verbs above (hand-built selectors). "agent" = the LLM decision
+// loop. download/upload/chat retry via agent automatically when the fixed path fails
+// structurally (a selector timeout, etc.). `blocked:true` (login required, credentials) is never
+// retried — the agent would hit the exact same wall. Missing required arguments are validated
+// before this runs at all, so a plain usage mistake never triggers a slow agent retry.
+async function withFallback(runFixed, buildAgentOpts) {
+  let fixed;
+  try { fixed = await runFixed(); }
+  catch (e) { fixed = { ok: false, error: String(e && e.message || e) }; }
+  if (!(fixed && fixed.ok === false && !fixed.blocked)) return { method: 'fixed', ...fixed };
+  const agentOpts = buildAgentOpts();
+  let agentRes;
+  try { agentRes = await cmdAgent({ 'max-steps': 20, ...agentOpts }); }
+  catch (e) { agentRes = { ok: false, error: String(e && e.message || e) }; }
+  return { method: 'agent (fallback)', fixed_attempt: fixed, ...agentRes };
+}
+
 // ───────────────────────── main ─────────────────────────
 (async () => {
   const argv = process.argv.slice(2);
   const cmd = argv[0]; const o = args(argv.slice(1));
   try {
+    // Usage mistakes (a missing required flag) are checked here, before withFallback, so they
+    // fail fast instead of triggering a slow agent retry that can't succeed either.
     if (cmd === 'status' || cmd === 'tabs') await cmdStatus();
-    else if (cmd === 'download') await cmdDownload(o);
-    else if (cmd === 'upload') await cmdUpload(o);
+    else if (cmd === 'download') {
+      if (!o.out || o.out === true) throw new Error('--out <dir> required');
+      emit(await withFallback(() => cmdDownload(o), () => ({
+        goal: 'On the current page (or the given chat), find every downloadable/saveable file or attachment and click to save it. Report the saved file names via extract.',
+        url: (o.url && o.url !== true) ? o.url : undefined,
+        'run-dir': o.out,
+      })));
+    }
+    else if (cmd === 'upload') {
+      if (!o.file || o.file === true) throw new Error('--file <path> required (file to upload)');
+      if (!fs.existsSync(o.file)) throw new Error('--file path does not exist: ' + o.file);
+      emit(await withFallback(() => cmdUpload(o), () => ({
+        goal: (o.kakao ? 'On the KakaoTalk chat' : 'On the current page') + ', attach the file to the chat/composer and send it. The file is already staged.',
+        url: (o.url && o.url !== true) ? o.url : undefined,
+        'attach-file': o.file,
+      })));
+    }
     else if (cmd === 'youtube') await cmdYoutube(o);
-    else if (cmd === 'chat') await cmdChat(o);
+    else if (cmd === 'chat') {
+      const site0 = SITES[o.site]; if (!site0) throw new Error('--site must be chatgpt|gemini');
+      const promptText0 = (o['prompt-file'] && o['prompt-file'] !== true) ? fs.readFileSync(o['prompt-file'], 'utf-8') : (o.prompt && o.prompt !== true ? o.prompt : '');
+      if (!promptText0) throw new Error('--prompt-file <path> or --prompt <text> required');
+      emit(await withFallback(() => cmdChat(o), () => ({
+        goal: `On the ${o.site} web page, send the following as a new message and wait for a complete answer, then extract it:\n\n${promptText0}`,
+        url: (o.url && o.url !== true) ? o.url : site0.url,
+      })));
+    }
     else if (cmd === 'facebook') await cmdFacebook(o);
-    else emit({ error: 'usage: status | download | upload | youtube | chat | facebook', got: cmd || '(none)' });
+    else if (cmd === 'agent') emit(await cmdAgent(o));
+    else emit({ error: 'usage: status | download | upload | youtube | chat | facebook | agent', got: cmd || '(none)' });
   } catch (e) { emit({ ok: false, error: String(e && e.message || e) }); process.exit(1); }
 })();

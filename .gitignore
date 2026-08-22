@@ -3,3 +3,5 @@ out/
 *.png
 *.log
 .DS_Store
+graduation_log.json
+sessions/

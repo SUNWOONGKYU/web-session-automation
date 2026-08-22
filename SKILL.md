@@ -1,6 +1,6 @@
 ---
 name: web-session-automation
-description: "Attach over CDP to one dedicated automation Chrome (your own profile + remote-debugging port) and reuse its logged-in sessions to upload files, download artifacts, chat (post & read), upload videos to YouTube Studio, and draft/schedule/measure Facebook posts. One engine, different verbs. Use when asked to upload a file to a web chat, upload a video to YouTube, download claude.ai results, ask ChatGPT/Gemini on the web, draft or schedule a Facebook post, or otherwise drive a logged-in browser. (Local, deterministic browser automation, no LLM, no API keys.)"
+description: "Attach over CDP to one dedicated automation Chrome (your own profile + remote-debugging port) and reuse its logged-in sessions to upload files, download artifacts, chat (post & read), upload videos to YouTube Studio, and draft/schedule/measure Facebook posts. One engine, different verbs. For any other site or task, the agent verb drives the same browser from a plain-English goal using your existing claude CLI login (still no API key) — download/upload/chat retry through it automatically when their fixed script fails. Use when asked to upload a file to a web chat, upload a video to YouTube, download claude.ai results, ask ChatGPT/Gemini on the web, draft or schedule a Facebook post, or drive a logged-in browser through a site this tool doesn't have a dedicated verb for. (Local browser automation. Six verbs are deterministic, no LLM, no API keys; the agent verb uses your claude subscription session, still no API key.)"
 ---
 
 # Web session automation
@@ -19,15 +19,17 @@ This skill follows the open Agent Skills format and is host-neutral. Use it from
 | **download** | save claude.ai artifacts/conversation text to a folder, or files from a KakaoTalk Business chat |
 | **chat** | type a prompt, submit, collect the stable answer (ChatGPT/Gemini) |
 | **facebook** | save a draft / schedule a post on your own profile, and read back its stats & insights |
+| **agent** | look at the screen, decide the next action, repeat — for any site/task the six verbs above don't cover |
 
-- **No LLM, no API keys.** It reuses *your* browser login; you log in, it never types passwords.
+- **No LLM, no API keys** for the six fixed verbs. It reuses *your* browser login; you log in, it never types passwords.
+- **agent** is the exception: it shells out to your already-logged-in `claude` CLI session (still no API key — same subscription, no extra cost beyond normal usage) to decide each step. `download`/`upload`/`chat` fall back to it automatically when their fixed script fails structurally; a `blocked` result (login/credentials needed) never triggers that fallback, since agent can't get past that wall either.
 - An elevated/admin everyday Chrome refuses CDP attach — use a **dedicated profile** automation Chrome.
 
 ## Files
 ```
 web-session-automation/
   ├─ SKILL.md       ← this orchestration file
-  └─ session.js     ← engine: status / download / upload / youtube / chat / facebook (Node + Playwright)
+  └─ session.js     ← engine: status / download / upload / youtube / chat / facebook / agent (Node + Playwright)
 ```
 Config: env `CDP_URL` (default `http://localhost:9222`), `PW_PATH` (playwright module path if unresolved).
 
@@ -79,6 +81,14 @@ node "<SKILL_ROOT>/session.js" facebook draft    --text-file "<body.txt>" [--ima
 node "<SKILL_ROOT>/session.js" facebook schedule --text-file "<body.txt>" [--image "<img>"] --date "Jul 23, 2026" --time "11:00 AM"
 ```
 Read modes (`status`/`stats`/`insights`) only look; write modes (`draft`/`schedule`) never publish immediately — **`Post` is never clicked**, only `Save` or `Schedule for later` → `Schedule`. `schedule` re-reads the date/time fields and **aborts before committing** if they didn't set cleanly. Everything lands in Content Library → Drafts / Scheduled; screenshots (`fb_staged.png`, `fb_draft_done.png`, `fb_schedule_pre.png`, …) go to `--shot-dir`. Selectors assume the English UI. **Automating your account is at your own risk under Meta's terms — use it on your own profile, at human pace.**
+
+## 5. agent (general-purpose fallback)
+```
+node "<SKILL_ROOT>/session.js" agent --goal "<plain-English goal>" [--url "<start URL>"] [--max-steps N] [--run-dir "<dir>"]
+```
+Loop: screenshot + interactive-element list → ask `claude -p` (your existing CLI login, structured JSON output) for one next action → click/type/select/attach_file/scroll/navigate → repeat, up to `--max-steps` (default 25). Stops itself (`blocked`) on anything a human must do — login, identity verification/e-signature, CAPTCHA, payment, or an irreversible final confirmation — enforced both by the prompt and, independently, in code (a hard refusal on `input[type=password]` and on button text matching a sensitive-action pattern, regardless of what the model decided). `download`/`upload`/`chat` retry through this automatically when their fixed path fails structurally. Every run logs to `graduation_log.json`; a host with 3 successful runs gets flagged `graduation_candidate: true` — a nudge to write it a dedicated fixed verb, not an automatic rewrite.
+
+**🗣️ Confirm before acting** — same rule as the fixed verbs: confirm the target/content with the user before giving `agent` a goal that sends, publishes, pays, or deletes something.
 
 ## Adding sites
 Add `{url, input, answer, stop}` selectors to the `SITES` map in `session.js` to support more chat targets. Upload/download depend on the target page's file input / download-button pattern (locale-specific selectors may need adjusting).
