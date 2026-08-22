@@ -10,6 +10,8 @@
 >
 > 위 다섯 개는 **"고정" 동사**입니다 — 그 사이트 하나 뜯어보고 미리 짜둔 스크립트라 빠르고 공짜지만, 그 사이트에서만 통합니다. 처음 보는 사이트나 미리 안 짜둔 작업은 **`agent`(에이전트) 동사**가 화면을 보고 그때그때 판단해서 처리합니다 — 목표를 말로만 주면 됩니다. API 키는 여전히 안 씁니다(이미 설치된 `claude` CLI 구독 세션을 그대로 씀). `download`·`upload`·`chat`은 고정 방식이 구조적으로 실패하면 자동으로 `agent`로 재시도합니다. 로그인·본인인증·캡차·결제·되돌릴 수 없는 최종확정, 이 다섯 가지는 사람만 할 수 있고 `agent`는 절대 대신 안 합니다.
 >
+> **원리**: 기반은 하나, Chrome DevTools Protocol(CDP)입니다. 고정 동사도 `agent`도 똑같이 이 CDP 연결(Playwright `connectOverCDP()`) 위에서 돌아갑니다 — 같은 브라우저, 같은 세션, 진입점만 다릅니다. `agent`는 매 스텝마다 화면 스크린샷+요소 목록을 CDP로 뽑아 `claude -p`에게 "다음 행동"을 물어보고, 그 판단을 다시 같은 CDP 연결로 실행합니다. 같은 사이트에서 `agent`가 3번 연속 성공하면 "이제 고정 스크립트로 만들 때 됐다"고 스스로 추천합니다(코드를 자동으로 새로 쓰진 않습니다).
+>
 > 이 저장소는 개방형 **Agent Skills** 형식을 사용하므로 **Claude Code, Codex/ChatGPT 데스크탑, Codex CLI, Antigravity CLI**에서 같은 스킬을 사용할 수 있습니다. `session.js`는 특정 AI에 종속되지 않은 Node.js 실행 파일입니다.
 >
 > **▶ 한 번 설치해서 세 AI에서 함께 쓰는 법**
@@ -64,6 +66,17 @@ A seventh verb is **agent** — a general‑purpose fallback for anything the fi
 ## Why "one engine"
 
 Downloading a file, uploading a file, and chatting with a web LLM look like different jobs, but they share one foundation: **connect to a logged‑in browser session and drive the DOM**. So they live in one tool with different verbs instead of three near‑identical scripts.
+
+---
+
+## How it works
+
+Everything sits on one foundation: the **Chrome DevTools Protocol (CDP)**. Launch Chrome with `--remote-debugging-port` and it exposes a protocol for remote control of that browser — including whatever you're already logged into. Playwright's `connectOverCDP()` is the client that speaks that protocol. **Both the fixed verbs and `agent` run over the same CDP connection** — same browser, same session, only the entry point differs.
+
+- **Fixed verbs** — hand‑written Playwright code. The DOM for each of the five sites (KakaoTalk, YouTube, ChatGPT, Gemini, Facebook) was inspected once and its selectors hardcoded (`input[type=file]`, `#title-textarea`, …). Connect over CDP, find that exact selector, click/type, done. No judgment involved — fast (seconds), free.
+- **`agent`** — for a site the fixed verbs don't know. Each step: (1) grab a screenshot + a list of interactive elements over CDP, (2) hand that to `claude -p` (a headless call into your existing CLI subscription, no API key) and get back exactly one next action as structured JSON, (3) execute that action over the same CDP connection (clicks by coordinate; dropdowns/file inputs are re‑located via a `data-agent-i` DOM marker set during step 1, since a coordinate click can't drive a native `<select>` popup or file chooser). Repeat until the goal is met. ~8–15s per step — has judgment, but slower.
+- **Automatic fallback + graduation** — if a fixed verb fails to find its selector (the site's DOM changed), `withFallback` retries the same task through `agent` automatically. In the other direction, once `agent` succeeds three times running against the same host, the result flags `graduation_candidate: true` — a nudge that it's worth hand‑writing a fixed verb for that site now (nothing is rewritten automatically; `recordAgentRun` only counts and recommends).
+- **Safety** — five categories are for a human only, always: logging in, identity verification / e‑signature, CAPTCHA, payment, and any irreversible final confirmation (purchase confirm, application submit, account deletion). These are refused twice, independently: once by instructing the model in the prompt, and once in code (a regex over the target element's text, plus a hard check on `input[type=password]`) — `agent` never relies on the model alone to hold the line.
 
 ---
 
