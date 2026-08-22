@@ -90,6 +90,8 @@ Loop: screenshot + interactive-element list → ask `claude -p` (your existing C
 
 **🗣️ Confirm before acting** — same rule as the fixed verbs: confirm the target/content with the user before giving `agent` a goal that sends, publishes, pays, or deletes something.
 
+**Note — when [Claude in Chrome](https://code.claude.com/docs/en/chrome) may be a better fit**: the `agent` verb is for driving `session.js` **headlessly from a script** (each step spawns a fresh `claude -p` process). If you're instead in a **live, interactive Claude Code session** and the user just wants a browser task done right now, `claude --chrome` (Anthropic's own Chrome extension, exposed as MCP tools — `read_page`/`click`/`type`/etc.) lets Claude Code drive the browser directly, with no session.js/CDP/decision-loop involved at all. That's often simpler for a one-off interactive task. Prefer `--chrome` for that case and reserve `agent` for scripted/repeatable use. (Not installed or verified as of this writing — requires the Chrome extension and a direct Anthropic subscription login.)
+
 ## Adding sites
 Add `{url, input, answer, stop}` selectors to the `SITES` map in `session.js` to support more chat targets. Upload/download depend on the target page's file input / download-button pattern (locale-specific selectors may need adjusting).
 
